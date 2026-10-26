@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.7.0'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.7.1'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent }
@@ -61,6 +61,8 @@ local function buildColours(a)
     draw.next  = color(0, 160, 255, math.min(255, a + 20))    -- YOUR next one: blue, a touch stronger
     draw.done  = color(120, 120, 120, math.floor(a / 2))      -- been through it: grey ghost
     draw.flash = color(255, 255, 255, math.min(255, a * 2))   -- the 1.5 s after crossing: white
+    draw.black = color(0, 0, 0, math.min(255, a * 5))         -- chequered band round the start line
+    draw.white = color(255, 255, 255, math.min(255, a * 5))
     draw.fg    = color(255, 255, 255, 254)                    -- 254 not 255: BeamMP notes 255 breaks the bg alpha
     draw.bg    = color(0, 0, 0, 160)
 end
@@ -305,9 +307,19 @@ local function onPreRender(dt)
         local c, label
         if style == 'flash' then c = draw.flash; label = base .. '  OK'
         elseif style == 'next' then c = draw.next; label = '> ' .. base .. ' <'
-        elseif style == 'done' then c = draw.done; label = base .. '  done'
-        else c = (i == 1) and draw.start or draw.cp; label = base end
+        elseif style == 'done' and i ~= 1 then c = draw.done; label = base .. '  done'
+        else c = (i == 1) and draw.start or draw.cp; label = base end   -- start/finish never fades (26/10)
         draw.sphere(cp.x, cp.y, cp.z, cp.r, c, true)
+        if i == 1 then
+            -- chequered band round the start/finish sphere: 32 small spheres, black and white
+            -- alternating, sitting just above the centre height so they read as a line on the road.
+            local n, br = 32, cp.r * 0.12
+            for k = 0, n - 1 do
+                local ang = k * (2 * math.pi / n)
+                draw.sphere(cp.x + cp.r * math.cos(ang), cp.y + cp.r * math.sin(ang), cp.z + 0.4, br,
+                            (k % 2 == 0) and draw.black or draw.white, true)
+            end
+        end
         draw.text(cp.x, cp.y, cp.z + cp.r + 1.0, label, draw.fg, true, false, draw.bg, false, true)
     end
 end

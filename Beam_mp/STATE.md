@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, NOT yet live. Next move: upload v0.7.0; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, plus v0.7.1 chequered start band, NOT yet live. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -202,6 +202,13 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   the config it sends each player so the client knows which laps are its own.
   NEXT (one step): upload v0.7.0, restart, drive through a checkpoint. If the big centre
   text does not appear: Alt+U, add "Race Countdown" and "Race Realtime Display", try again.
+
+- 26/10: Darren: start line too faint once passed; wants black-and-white chequered with
+  green. -> v0.7.1: start/finish never takes the grey "done" look; a band of 32 small
+  spheres, black and white alternating, rings the start sphere at 0.4 m above its centre.
+  Same two draw calls, nothing new to trust. UNCHECKED how it reads at speed; screenshot.
+  Also tells us: alpha IS honoured (grey at half alpha was "too faint"), so markerAlpha works.
+  v0.7.0 never uploaded; go straight to v0.7.1.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
