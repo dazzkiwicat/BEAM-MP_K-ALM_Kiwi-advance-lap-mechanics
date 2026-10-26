@@ -9,12 +9,14 @@ so every message carries the vehicle id.
     Resources/Server/kkLap/config.json                   written by the plugin, edit live via /lap
     Resources/Client/kkLap/scripts/kkLap/modScript.lua    client mod source
     Resources/Client/kkLap/lua/ge/extensions/kkLap.lua
-    Resources/Client/kkLap.zip                            built by tools/build_client_zip.py
+    Resources/Client/kkLap_v<VERSION>.zip                 built by tools/build_client_zip.py
 
 Linux is case-sensitive. `Resources`, `Server`, `Client`, `kkLap` exactly as above, or the
 server loads nothing and says nothing.
 
 ## Build the client zip
+Bump M.VERSION in kkLap.lua and the modScript log line first. The zip takes its name from it.
+When uploading a new version, delete the old kkLap_v*.zip from the server, or players get both.
     python3 Beam_mp/tools/build_client_zip.py
 
 ## Bench test before uploading (no server needed)

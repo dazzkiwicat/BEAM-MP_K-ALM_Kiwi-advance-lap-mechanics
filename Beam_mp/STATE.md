@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-26 by Claude. Branch: claude/blissful-mccarthy-eg6jed
+Updated: 2026-10-26 by Claude. Current version: 0.2.0 (server main.lua and client zip share it). Branch: claude/blissful-mccarthy-eg6jed
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -74,7 +74,8 @@ Next move is the first live load on the Linux test server via Pterodactyl.
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
-2b. OPEN. Re-upload the rebuilt kkLap.zip, restart, rejoin. Check beamng.log on the PC for
+2b. OPEN. Upload kkLap_v0.2.0.zip and the v0.2.0 main.lua, DELETE the old kkLap.zip from the
+    server, restart, rejoin. Check beamng.log on the PC for
     "KKLAP". A "modScript ran" line means the zip arrives and runs.
 3. Join in game. kkLap.log should get: [C<pid>] extension loaded, then cfg received.
 4. Wait 10 s. kkLap.log should get "alive, own vehicles: <id>". If missing, onUpdate

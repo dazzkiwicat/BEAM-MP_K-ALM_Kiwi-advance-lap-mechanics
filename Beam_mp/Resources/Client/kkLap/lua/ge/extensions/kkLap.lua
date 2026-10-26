@@ -13,6 +13,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
+M.VERSION = '0.2.0'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp = n, inside = bool }
@@ -115,7 +116,7 @@ local function onExtensionLoaded()
     AddEventHandler('kkLap:split',  onSplit)
     AddEventHandler('kkLap:info',   onInfo)
     AddEventHandler('kkLap:getpos', onGetPos)
-    dbg('extension loaded, asking server for config')
+    dbg('extension v' .. M.VERSION .. ' loaded, asking server for config')
     TriggerServerEvent('kkLap:getcfg', '')
 end
 

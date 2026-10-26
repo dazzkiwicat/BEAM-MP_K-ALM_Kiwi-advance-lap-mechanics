@@ -12,6 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
+local VERSION  = "0.2.0"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -211,5 +212,5 @@ function onInit()
     MP.RegisterEvent("kkLap:dbg",          "onClientDbg")
     MP.RegisterEvent("kkLap:posreply",     "onPosReply")
     MP.RegisterEvent("kkLap:getcfg",       "onGetCfg")
-    log("I", PLUGIN .. " loaded on " .. MP.GetOSName())
+    log("I", PLUGIN .. " v" .. VERSION .. " loaded on " .. MP.GetOSName())
 end
