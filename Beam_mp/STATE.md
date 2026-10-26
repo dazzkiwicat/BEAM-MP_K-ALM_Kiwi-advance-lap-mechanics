@@ -25,10 +25,13 @@ Next move is the first live load on the Linux test server via Pterodactyl.
 - Client mod zip layout scripts/modScript.lua + lua/ge/extensions/<name>.lua from the
   BeamMP getting-started guide. (web)
 
+## Checked against BeamMP-Server source (cloned 26/10, TLuaEngine.cpp / TServer.cpp)
+- onInit is registered by the server itself; no MP.RegisterEvent needed.
+- onPlayerJoin is a real event the server fires. Client still asks for config on load.
+- Plugin Lua state opens all standard libs (luaL_openlibs), so io.open and os.date work.
+- onVehiclePaintChanged exists too (undocumented); irrelevant for now.
+
 ## UNCHECKED until the first live run
-- onInit fires without MP.RegisterEvent (BeamMP's own example does it that way).
-- onPlayerJoin exists (listed in docs join order, no section). Client asks for config
-  itself on load (kkLap:getcfg) so nothing depends on it.
 - Does the extension's onUpdate(dt) get called when loaded via modScript load()?
   The 5-second "alive" line in kkLap.log is the test. No line = hook not wired.
 - be:getPlayerVehicle(0) is seat 0. In split-screen player 2 may be seat 1; /lap mark
@@ -61,6 +64,10 @@ Next move is the first live load on the Linux test server via Pterodactyl.
 4. Direction check: a sphere crossed backwards must not count.
 5. Checkpoint as a line (two points + width) as an option, for wide start/finish straights.
 6. Invalidate lap on reset/respawn (server already sees onVehicleReset).
+
+## Community
+Darren has run a BeamMP server for a few years and wants this built for the community,
+with more people involved. Keep the README readable by a server owner who doesn't code.
 
 ## Open questions for Darren
 - Paste the exact error line from the old attempt's debug when you find it.
