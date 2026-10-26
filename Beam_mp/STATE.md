@@ -2,8 +2,15 @@
 
 Updated: 2026-10-26 by Claude. Branch: claude/blissful-mccarthy-eg6jed
 
+## Goal (Darren, chat 26/10)
+A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
+derby...) bolt onto the same server/client plumbing. Split-screen is NOT the focus;
+keying everything by vehicle id makes it work anyway at no cost, so that stays.
+
 ## Where we are
 Skeleton written, syntax-checked, zipped. **Never run on a real server yet.**
+Darren has previously had a server plugin load and print to the console (chat 26/10),
+so the Resources/Server path and onInit are known to work on his setup.
 Next move is the first live load on the Linux test server via Pterodactyl.
 
 ## Ground truth (checked)
@@ -46,6 +53,14 @@ Next move is the first live load on the Linux test server via Pterodactyl.
    isn't wired: that's the first bug to fix.
 5. /lap mark at a start line, drive 50 m, /lap mark again, drive round, cross both.
    Expect "timing started", a split, then a LAP line.
+
+## Lap timer features to add once the skeleton runs (in order)
+1. Per-driver best / last / delta to best, shown on screen as a small HUD app, not toasts.
+2. Sector times with delta colours (green/red) like a real timing screen.
+3. Leaderboard persisted to a file per map, survives restarts, /lap top shows it.
+4. Direction check: a sphere crossed backwards must not count.
+5. Checkpoint as a line (two points + width) as an option, for wide start/finish straights.
+6. Invalidate lap on reset/respawn (server already sees onVehicleReset).
 
 ## Open questions for Darren
 - Paste the exact error line from the old attempt's debug when you find it.
