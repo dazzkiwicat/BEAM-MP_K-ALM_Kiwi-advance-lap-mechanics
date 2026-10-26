@@ -67,7 +67,8 @@ Next move is the first live load on the Linux test server via Pterodactyl.
   and NOTHING from the client: no "extension loaded", no alive line. Client mod did not run,
   or the zip never reached the PC. (Darren, paste)
   Change made: modScript.lua moved to scripts/kkLap/modScript.lua to match BeamMP's own
-  scripts/BeamMP/modScript.lua (cloned source). Guide diagram showed it one level up. UNCHECKED
+  scripts/BeamMP/modScript.lua (cloned source). Guide diagram showed it one level up. Darren hit
+  the same thing on his first attempt and had to move modScript into its own folder (chat 26/10). UNCHECKED
   whether that was the cause; the beamng.log grep on the PC decides.
 
 ## First live test, in order
