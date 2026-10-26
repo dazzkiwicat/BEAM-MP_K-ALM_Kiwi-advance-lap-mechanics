@@ -21,7 +21,9 @@ Bugs the bench caught on its first run (26/10), both fixed:
   Rule: never put ':' in an event name. Data may contain colons, names may not.
 Darren has previously had a server plugin load and print to the console (chat 26/10),
 so the Resources/Server path and onInit are known to work on his setup.
-Next move is the first live load on the Linux test server via Pterodactyl.
+Live status 26/10: server side loads and sees the join. **Client zip never ran on the PC**
+(beamng.log has no KKLAP line from the mod). Suspect the upload in Resources/Client, see the
+live test log. Next move: Darren's file listing of Resources/Client after the v0.3.0 upload.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -73,10 +75,28 @@ Next move is the first live load on the Linux test server via Pterodactyl.
   the same thing on his first attempt and had to move modScript into its own folder (chat 26/10). UNCHECKED
   whether that was the cause; the beamng.log grep on the PC decides.
 
+- 26/10 ~23:10 (v0.2.0 session, before v0.3.0 was uploaded): Darren grepped beamng.log on the PC
+  for "KKLAP kkLap". ONE hit: the MPCoreNetwork server-browser JSON. No "[KKLAP] modScript ran"
+  line. **So the client zip never ran on the PC. Not a colon problem, not an onUpdate problem:
+  the mod never loaded.** (Darren, paste)
+  Clue in that same JSON, his server's entry: modstotal 31, modlist ends with "/;" = a mod
+  with an EMPTY name. TResourceManager.cpp (server source, constructor): every entry in
+  Resources/Client whose name ends in ".zip" is listed as "/" + (name with .zip cut off) + ";".
+  An empty name means something in Resources/Client is called exactly ".zip" (a file or a
+  folder: the constructor does not check is_directory). UNCHECKED which. That "modstotalsize"
+  read "560002kkLap7901" in the paste; the server sends a plain integer there, so that is
+  the paste garbled, not evidence.
+  The beamng.log paste was huge and blew the chat context (Darren, 26/10). Rule from now on:
+  never paste beamng.log; grep it on the PC and paste only matching lines.
+  NEXT (one step): Darren pastes the Pterodactyl file listing of /home/container/Resources/Client
+  (names and sizes), after uploading kkLap_v0.3.0.zip and deleting the old kkLap.zip. Then
+  the console "Loaded N Mods" line and the modlist should show "/kkLap_v0.3.0;".
+  Then rejoin and grep beamng.log on the PC for KKLAP again.
+
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
-2b. OPEN. Upload kkLap_v0.3.0.zip and the v0.2.0 main.lua, DELETE the old kkLap.zip from the
+2b. OPEN. Upload kkLap_v0.3.0.zip and the v0.3.0 main.lua, DELETE the old kkLap.zip from the
     server, restart, rejoin. Check beamng.log on the PC for
     "KKLAP". A "modScript ran" line means the zip arrives and runs.
 3. Join in game. kkLap.log should get: [C<pid>] extension loaded, then cfg received.
