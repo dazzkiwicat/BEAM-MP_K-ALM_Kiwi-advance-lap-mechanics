@@ -13,7 +13,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.2.0'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.3.0'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp = n, inside = bool }
@@ -21,7 +21,7 @@ local lastDbg  = 0
 
 local function dbg(msg)
     log('I', 'kkLap', '[KKLAP] ' .. msg)   -- 'I' not 'D': BeamMP itself only logs E/W/I
-    if cfg.debug then TriggerServerEvent('kkLap:dbg', msg) end
+    if cfg.debug then TriggerServerEvent('kkLap_dbg', msg) end
 end
 
 local function toast(msg, ttl)
@@ -61,7 +61,7 @@ local function onGetPos(data)
     local veh = be:getPlayerVehicle(0)             -- BeamNG: seat 0's vehicle
     if not veh then dbg('getpos: no player vehicle'); return end
     local p = veh:getPosition()
-    TriggerServerEvent('kkLap:posreply', jsonEncode({ r = d.r, pos = { x = p.x, y = p.y, z = p.z } }))
+    TriggerServerEvent('kkLap_posreply', jsonEncode({ r = d.r, pos = { x = p.x, y = p.y, z = p.z } }))
     dbg(string.format('pos sent %.1f %.1f %.1f', p.x, p.y, p.z))
 end
 
@@ -84,7 +84,7 @@ local function onUpdate(dt)
 
             if inside and not s.inside then
                 -- edge: just entered the sphere. Report once.
-                TriggerServerEvent('kkLap:cross', jsonEncode({ vid = vid, cp = s.nextCp, pos = { x = p.x, y = p.y, z = p.z } }))
+                TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = s.nextCp, pos = { x = p.x, y = p.y, z = p.z } }))
                 dbg(string.format('vid %d entered cp %d', vid, s.nextCp))
                 s.nextCp = (s.nextCp % n) + 1
                 inside   = false   -- new target sphere: start outside it, or touching spheres get missed (bench, 26/10)
@@ -111,13 +111,13 @@ function M.fmt(ms)
 end
 
 local function onExtensionLoaded()
-    AddEventHandler('kkLap:cfg',    onCfg)
-    AddEventHandler('kkLap:lap',    onLap)
-    AddEventHandler('kkLap:split',  onSplit)
-    AddEventHandler('kkLap:info',   onInfo)
-    AddEventHandler('kkLap:getpos', onGetPos)
+    AddEventHandler('kkLap_cfg',    onCfg)
+    AddEventHandler('kkLap_lap',    onLap)
+    AddEventHandler('kkLap_split',  onSplit)
+    AddEventHandler('kkLap_info',   onInfo)
+    AddEventHandler('kkLap_getpos', onGetPos)
     dbg('extension v' .. M.VERSION .. ' loaded, asking server for config')
-    TriggerServerEvent('kkLap:getcfg', '')
+    TriggerServerEvent('kkLap_getcfg', '')
 end
 
 M.onExtensionLoaded = onExtensionLoaded

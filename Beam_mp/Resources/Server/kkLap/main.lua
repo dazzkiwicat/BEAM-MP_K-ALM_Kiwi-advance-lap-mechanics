@@ -8,11 +8,11 @@
 --
 -- Every line this plugin prints starts with [KKLAP] so one grep finds it:
 --     grep KKLAP Server.log
--- Client-side debug lines are forwarded here too (kkLap:dbg), so the server log
+-- Client-side debug lines are forwarded here too (kkLap_dbg), so the server log
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.2.0"   -- same number as the client zip it was built with
+local VERSION  = "0.3.0"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -70,7 +70,7 @@ end
 
 -- push the whole config to one player (-1 = everyone)
 local function sendCfg(pid)
-    MP.TriggerClientEventJson(pid, "kkLap:cfg", cfg)
+    MP.TriggerClientEventJson(pid, "kkLap_cfg", cfg)
     dbg("cfg sent to " .. pid)
 end
 
@@ -104,7 +104,7 @@ function onCross(pid, data)
 
     if d.cp ~= r.nextCp then
         -- wrong checkpoint: ignore, but tell the client in debug so a bad radius shows up
-        MP.TriggerClientEventJson(pid, "kkLap:info", { vid = d.vid, msg = "wrong cp " .. tostring(d.cp) .. ", want " .. r.nextCp })
+        MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "wrong cp " .. tostring(d.cp) .. ", want " .. r.nextCp })
         return
     end
 
@@ -118,17 +118,17 @@ function onCross(pid, data)
                 r.laps = r.laps + 1
                 if not r.best or lap < r.best then r.best = lap end
                 local name = MP.GetPlayerName(pid) or ("p" .. pid)
-                MP.TriggerClientEventJson(-1, "kkLap:lap", { pid = pid, vid = d.vid, name = name, lapMs = lap, bestMs = r.best, laps = r.laps })
+                MP.TriggerClientEventJson(-1, "kkLap_lap", { pid = pid, vid = d.vid, name = name, lapMs = lap, bestMs = r.best, laps = r.laps })
                 log("I", string.format("LAP %s vid=%s %s best=%s", name, tostring(d.vid), fmt(lap), fmt(r.best)))
             end
         else
-            MP.TriggerClientEventJson(pid, "kkLap:info", { vid = d.vid, msg = "timing started" })
+            MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
         end
         r.lapStart = t
         r.nextCp   = (n > 1) and 2 or 1
     else
         -- a split
-        MP.TriggerClientEventJson(pid, "kkLap:split", { vid = d.vid, cp = d.cp, splitMs = t - r.lapStart })
+        MP.TriggerClientEventJson(pid, "kkLap_split", { vid = d.vid, cp = d.cp, splitMs = t - r.lapStart })
         r.nextCp = (d.cp % n) + 1
     end
 end
@@ -167,7 +167,7 @@ function onChatMessage(pid, name, msg)
         say(pid, "/lap set minLapMs <n> | set defaultRadius <n>")
     elseif cmd == "mark" then
         -- ask the client for its current vehicle position; reply comes to onPosReply
-        MP.TriggerClientEventJson(pid, "kkLap:getpos", { r = tonumber(args[3]) })
+        MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]) })
     elseif cmd == "list" then
         if #cfg.checkpoints == 0 then say(pid, "no checkpoints") end
         for i, c in ipairs(cfg.checkpoints) do
@@ -208,9 +208,9 @@ function onInit()
     MP.RegisterEvent("onChatMessage",      "onChatMessage")
     MP.RegisterEvent("onPlayerJoin",       "onPlayerJoin")
     MP.RegisterEvent("onPlayerDisconnect", "onPlayerDisconnect")
-    MP.RegisterEvent("kkLap:cross",        "onCross")
-    MP.RegisterEvent("kkLap:dbg",          "onClientDbg")
-    MP.RegisterEvent("kkLap:posreply",     "onPosReply")
-    MP.RegisterEvent("kkLap:getcfg",       "onGetCfg")
+    MP.RegisterEvent("kkLap_cross",        "onCross")
+    MP.RegisterEvent("kkLap_dbg",          "onClientDbg")
+    MP.RegisterEvent("kkLap_posreply",     "onPosReply")
+    MP.RegisterEvent("kkLap_getcfg",       "onGetCfg")
     log("I", PLUGIN .. " v" .. VERSION .. " loaded on " .. MP.GetOSName())
 end

@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-26 by Claude. Current version: 0.2.0 (server main.lua and client zip share it). Branch: claude/blissful-mccarthy-eg6jed
+Updated: 2026-10-26 by Claude. Current version: 0.3.0 (server main.lua and client zip share it). Branch: claude/blissful-mccarthy-eg6jed
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -17,6 +17,8 @@ the game really calls onUpdate.
 Bugs the bench caught on its first run (26/10), both fixed:
 - client inside-flag leaked across checkpoints: touching spheres missed the second one.
 - /lap reset cleared the server but not the clients; now it pushes config, which resets both.
+- event names with a colon are cut at the colon by BeamMP on both ends (found live, 26/10).
+  Rule: never put ':' in an event name. Data may contain colons, names may not.
 Darren has previously had a server plugin load and print to the console (chat 26/10),
 so the Resources/Server path and onInit are known to work on his setup.
 Next move is the first live load on the Linux test server via Pterodactyl.
@@ -74,7 +76,7 @@ Next move is the first live load on the Linux test server via Pterodactyl.
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
-2b. OPEN. Upload kkLap_v0.2.0.zip and the v0.2.0 main.lua, DELETE the old kkLap.zip from the
+2b. OPEN. Upload kkLap_v0.3.0.zip and the v0.2.0 main.lua, DELETE the old kkLap.zip from the
     server, restart, rejoin. Check beamng.log on the PC for
     "KKLAP". A "modScript ran" line means the zip arrives and runs.
 3. Join in game. kkLap.log should get: [C<pid>] extension loaded, then cfg received.

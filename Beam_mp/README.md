@@ -40,6 +40,11 @@ Open that in the Pterodactyl file manager, or in the console:  tail -f Resources
 With `/lap debug on`, client-side lines arrive there too, tagged [KKLAP][C<pid>],
 so one file tells the whole story. Game side, if ever needed: grep KKLAP beamng.log
 
+## Rule learned the hard way
+Never put a colon in an event name. BeamMP splits `name:data` at the first colon on both
+server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
+Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
+
 ## What is BeamMP and what is BeamNG in the client file
 BeamMP: TriggerServerEvent, AddEventHandler, MPVehicleGE.isOwn.
 BeamNG game Lua: be:getObjectByID, be:getPlayerVehicle, veh:getPosition, guihooks.trigger, log, jsonEncode/jsonDecode.

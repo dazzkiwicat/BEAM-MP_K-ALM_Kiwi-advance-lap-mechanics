@@ -10,7 +10,7 @@ Server runs on Lua 5.3 (what Darren's BeamMP-Server v3.9.3 reports), client on L
 Nothing here touches a real server. It is a model of the plumbing, not a measurement of it:
 if the real game never calls onUpdate, this bench cannot know.
 """
-import json, os, sys, shutil, tempfile, pathlib
+import json, os, re, sys, shutil, tempfile, pathlib
 from lupa import lua53, luajit21
 
 ROOT   = pathlib.Path(__file__).resolve().parent.parent
@@ -28,6 +28,7 @@ toasts     = []                          # guihooks Message msgs
 server_log = []                          # print() lines from the server
 client_log = []                          # log() lines from the client
 events_to_client = []                    # (pid, name, json) sent by server
+dropped          = []                    # client events the server had no handler for
 
 # ------------------------------------------------------------------ server state
 S = lua53.LuaRuntime(unpack_returned_tuples=True)
@@ -38,8 +39,14 @@ def s_timer():
     return S.table(GetCurrent=lambda self: clock_ms[0] / 1000.0, Start=lambda self: None)
 def s_trigger_client_json(pid, name, tbl):
     data = json.dumps(lua_to_py(tbl))
-    events_to_client.append((pid, name, data))
-    deliver_to_client(name, data)
+    # Real wire format server -> client is ":<NAME>:<DATA>" and the client splits it with
+    # the Lua pattern ^:([^:]+):(.*)  (MPGameNetwork.lua handleEvents). Model that exactly.
+    wire = ":" + name + ":" + data
+    m = re.match(r"^:([^:]+):(.*)$", wire, re.S)
+    if not m: return False, "malformed"
+    wname, wdata = m.group(1), m.group(2)
+    events_to_client.append((pid, wname, wdata))
+    deliver_to_client(wname, wdata)
     return True, ""
 def s_send_chat(pid, msg): chat_out.append((pid, msg))
 
@@ -72,9 +79,16 @@ C = luajit21.LuaRuntime(unpack_returned_tuples=True)
 c_handlers = {}
 
 def c_trigger_server(name, data):
-    fn = s_handlers.get(name)
-    if not fn: raise AssertionError("client sent %r but server never registered it" % name)
-    return S.globals()[fn](1, data)          # the fake client is player 1
+    # Real wire format client -> server is "E:<NAME>:<DATA>" and TServer.cpp HandleEvent
+    # splits at the first ':' after position 2. Model that exactly.
+    wire = "E:" + name + ":" + data
+    sep = wire.find(":", 2)
+    wname, wdata = wire[2:sep], wire[sep+1:]
+    fn = s_handlers.get(wname)
+    if not fn:
+        dropped.append(wname)                  # the real server drops it silently
+        return None
+    return S.globals()[fn](1, wdata)          # the fake client is player 1
 def c_add_handler(name, func, _n=None): c_handlers[name] = func
 def deliver_to_client(name, data):
     if name in c_handlers: c_handlers[name](data)
@@ -118,7 +132,7 @@ def drive(vid, path, step_ms=100):
     """move vid through a list of points, one frame per point"""
     for p in path:
         positions[vid] = p; tick(ms=step_ms)
-def laps(): return [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap:lap"]
+def laps(): return [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_lap"]
 
 failures = []
 def check(cond, what):
@@ -130,7 +144,10 @@ own_vids[:] = [100, 101]; seat0_vid[0] = 100
 positions[100] = (0, 0, 0);   positions[101] = (500, 500, 0)
 chat("/lap mark")                                # cp1 at car (0,0,0)
 positions[100] = (100, 0, 0); chat("/lap mark 10")   # cp2 at (100,0,0) r=10
-cfg = json.load(open("Resources/Server/kkLap/config.json"))
+cfgfile = pathlib.Path("Resources/Server/kkLap/config.json")
+check(cfgfile.exists(), "/lap mark round trip wrote config.json")
+cfg = json.load(open(cfgfile)) if cfgfile.exists() else {"checkpoints": [], "defaultRadius": None}
+if not cfg["checkpoints"]: cfg["checkpoints"] = [{"r": None}, {"r": None}]
 check(len(cfg["checkpoints"]) == 2, "two checkpoints saved to config.json")
 check(cfg["checkpoints"][1]["r"] == 10, "/lap mark 10 sets radius 10")
 check(cfg["checkpoints"][0]["r"] == cfg["defaultRadius"], "/lap mark uses defaultRadius")
@@ -177,6 +194,7 @@ drive(100, [(50, 0, 0), (0, 0, 0)])
 check(not any("entered cp" in l for l in client_log[mark:]), "after /lap clear the client reports no crossings")
 check(any("[KKLAP][C1]" in l for l in server_log), "client debug lines reach the server log with the [C<pid>] tag")
 check((work / "Resources/Server/kkLap/kkLap.log").exists(), "kkLap.log file is written")
+check(not dropped, "no client event was dropped by the server for an unknown name (first: %s)" % (dropped[:1] or "-"))
 
 print()
 print("bench dir:", work)
