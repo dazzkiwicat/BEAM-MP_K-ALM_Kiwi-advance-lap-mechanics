@@ -147,6 +147,17 @@ work"). v0.4.0 adds world markers, bench-passed, NOT yet live. Next move: upload
 5. Checkpoint as a line (two points + width) as an option, for wide start/finish straights.
 6. Invalidate lap on reset/respawn (server already sees onVehicleReset).
 
+## Ship log (what left the building, by whom)
+- 26/10 (server time ~23:50): **Darren published the first GitHub release himself.**
+  Tag "Beam-MP", pre-release, commit b18c4f0 = kkLap v0.4.0 (markers build). Title says
+  "latest 0.43 update"; our record says BeamNG 0.40 (19/10): UNCHECKED which he runs.
+  Assets: GitHub's own source zip/tar only; the built kkLap_v0.4.0.zip is inside it at
+  Beam_mp/Resources/Client/. Release notes: "works mint for now, not tested much yet".
+  Trap: the lap that was tested live was v0.3.0; v0.4.0's markers were NOT seen live when
+  the release went out. Markers fail soft by design, timing is unchanged, so the release
+  is usable; the markers are still UNCHECKED.
+  Next release: tag it with the version (kkLap-v0.4.1) so two releases never share a name.
+
 ## Community
 Darren has run a BeamMP server for a few years and wants this built for the community,
 with more people involved. Keep the README readable by a server owner who doesn't code.
