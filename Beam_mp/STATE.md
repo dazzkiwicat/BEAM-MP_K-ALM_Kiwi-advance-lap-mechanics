@@ -22,7 +22,8 @@ Bugs the bench caught on its first run (26/10), both fixed:
 Darren has previously had a server plugin load and print to the console (chat 26/10),
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
-work"). v0.4.0 adds world markers, bench-passed, NOT yet live. Next move: upload v0.4.0, screenshot.
+work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
+bench-passed 27 checks, NOT yet live. Next move: upload v0.5.0, drive a lap, screenshot chat.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -127,6 +128,20 @@ work"). v0.4.0 adds world markers, bench-passed, NOT yet live. Next move: upload
   restart, rejoin, screenshot. Expect blue/green/orange translucent balls on the track with
   labels; kkLap.log "[C0] extension v0.4.0 loaded, markers available".
 
+- 26/10 later: **v0.4.0 LIVE, markers visible** (Darren: "works well", chat). Step 6 done.
+  Asks: sector times visible to everyone (chat announce preferred), and speed through a
+  checkpoint, "enter one side of the bubble, out the other".
+  -> v0.5.0 written, bench 27 checks: sector = since previous checkpoint, split = since the
+  line, both toasted to the driver; every finished lap announced to all in chat with the
+  sector list; laps.log (append only) and times.json (best per name) beside main.lua;
+  /lap times, /lap announce on|off. Speed: read off the car with veh:getVelocityXYZ() at the
+  frame it enters the sphere, not timed across the bubble: the chord through a sphere is only
+  the diameter if you hit it dead centre, so the bubble method reads low when you clip the
+  edge, and the game already knows the velocity. getVelocityXYZ is what BeamMP's own
+  MPVehicleGE.lua:2605 calls on a vehicle (cloned source). UNCHECKED on the live server.
+  NEXT (one step): upload main.lua v0.5.0 + kkLap_v0.5.0.zip, delete the v0.4.0 zip, restart,
+  drive a lap, screenshot the chat line and laps.log.
+
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
@@ -137,7 +152,8 @@ work"). v0.4.0 adds world markers, bench-passed, NOT yet live. Next move: upload
    doesn't, onUpdate isn't wired: that's the first bug to fix.
 5. DONE ~23:30. /lap mark at a start line, drive 50 m, /lap mark again, drive round, cross both.
    "timing started", a split, then a LAP line. Darren: "seems to work".
-6. OPEN. v0.4.0: markers visible in the world, blue one is your next checkpoint.
+6. DONE. v0.4.0 markers visible in the world (Darren: "works well").
+7. OPEN. v0.5.0: chat line per lap with sectors and km/h; laps.log on the server.
 
 ## Lap timer features to add once the skeleton runs (in order)
 1. Per-driver best / last / delta to best, shown on screen as a small HUD app, not toasts.

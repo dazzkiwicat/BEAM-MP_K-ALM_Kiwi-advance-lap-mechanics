@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.4.0'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.5.0'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp = n, inside = bool }
@@ -64,16 +64,23 @@ local function onCfg(data)
         #cfg.checkpoints, tostring(cfg.debug), tostring(cfg.markers)))
 end
 
+local function sectorsText(list)
+    local out = {}
+    for i, ms in ipairs(list or {}) do out[i] = string.format('%.1f', ms / 1000) end
+    return '[' .. table.concat(out, ' | ') .. ']'
+end
+
 local function onLap(data)
     local d = jsonDecode(data)
     if not d then return end
-    toast(string.format('%s  lap %d  %s  (best %s)', d.name, d.laps, M.fmt(d.lapMs), M.fmt(d.bestMs)), 6)
+    toast(string.format('%s  lap %d  %s  %s  best %s', d.name, d.laps, M.fmt(d.lapMs), sectorsText(d.sectors), M.fmt(d.bestMs)), 6)
 end
 
 local function onSplit(data)
     local d = jsonDecode(data)
     if not d then return end
-    toast(string.format('split %d  %s', d.cp, M.fmt(d.splitMs)), 3)
+    -- sector = since the previous checkpoint, split = since the line, speed = entering this sphere
+    toast(string.format('S%d  %.1f s   split %s   %d km/h', d.cp - 1, (d.sectorMs or 0) / 1000, M.fmt(d.splitMs), d.kph or 0), 4)
 end
 
 local function onInfo(data)
@@ -123,7 +130,11 @@ local function onUpdate(dt)
 
             if inside and not s.inside then
                 -- edge: just entered the sphere. Report once.
-                TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = s.nextCp, pos = { x = p.x, y = p.y, z = p.z } }))
+                -- speed read straight off the car at the moment it enters the sphere.
+                -- BeamNG: getVelocityXYZ returns three numbers in m/s (same call BeamMP's MPVehicleGE uses).
+                local vx, vy, vz = veh:getVelocityXYZ()
+                local kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6
+                TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = s.nextCp, kph = kph, pos = { x = p.x, y = p.y, z = p.z } }))
                 dbg(string.format('vid %d entered cp %d', vid, s.nextCp))
                 s.nextCp = (s.nextCp % n) + 1
                 inside   = false   -- new target sphere: start outside it, or touching spheres get missed (bench, 26/10)

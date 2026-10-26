@@ -21,6 +21,7 @@ SABOTAGE = "--break" in sys.argv
 # ------------------------------------------------------------------ fake world
 clock_ms   = [0]                         # server clock, we advance it by hand
 positions  = {}                          # vid -> (x, y, z)
+velocities = {}                          # vid -> (vx, vy, vz) m/s
 own_vids   = []                          # vehicles the fake client owns
 seat0_vid  = [None]                      # what be:getPlayerVehicle(0) returns
 chat_out   = []                          # (pid, msg) from MP.SendChatMessage
@@ -98,6 +99,8 @@ class Veh:
     def getPosition(self):
         x, y, z = positions[self.vid]; return C.table(x=x, y=y, z=z)
     def getID(self): return self.vid
+    def getVelocityXYZ(self):
+        return velocities.get(self.vid, (0.0, 0.0, 0.0))    # m/s, three values like the game
 
 C.globals().TriggerServerEvent = c_trigger_server
 C.globals().AddEventHandler    = c_add_handler
@@ -163,6 +166,7 @@ check(cfg["checkpoints"][0]["r"] == cfg["defaultRadius"], "/lap mark uses defaul
 check(any("checkpoint 2 marked" in m for _, m in chat_out), "chat confirms the mark")
 
 # ------------------------------------------------------------------ scenario 2: one clean lap, vid 100
+velocities[100] = (27.78, 0.0, 0.0)              # 100 km/h along x, so every crossing reports it
 positions[100] = (50, 0, 0); tick()              # start between the two spheres, outside both
 before = len(laps())
 drive(100, [(0, 0, 0)])                          # enter cp1: timing starts
@@ -178,7 +182,16 @@ if got:
     check(lap["vid"] == 100 and lap["lapMs"] == (expected if not SABOTAGE else -1),
           "lap time equals server clock between the two cp1 crossings (%d ms)" % expected)
     check(lap["name"] == "Darren" and lap["laps"] == 1, "lap carries player name and lap count")
-check(any("split 2" in t for t in toasts), "client showed the split toast")
+    check(sum(lap["sectors"]) == lap["lapMs"], "sector times add up to the lap time")
+    check(lap["kph"] == 100, "lap event carries entry speed (100 km/h from 27.78 m/s)")
+splits = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_split"]
+check(splits and splits[-1]["kph"] == 100 and splits[-1]["sectorMs"] > 0, "split event carries sector time and speed")
+check(any("S1" in t and "100 km/h" in t for t in toasts), "client showed the sector toast with speed")
+check(any(pid == -1 and "Darren  lap 1" in m for pid, m in chat_out), "lap announced to everyone in chat")
+check(pathlib.Path("Resources/Server/kkLap/laps.log").exists(), "laps.log written")
+check(pathlib.Path("Resources/Server/kkLap/times.json").exists(), "times.json written")
+mark = len(chat_out); chat("/lap times")
+check(any("1. Darren" in m for _, m in chat_out[mark:]), "/lap times lists the best lap")
 
 # ------------------------------------------------------------------ scenario 3: second vehicle on the same client times separately
 # vid 101 jumps sphere to sphere with NO frame outside in between. That is the case
