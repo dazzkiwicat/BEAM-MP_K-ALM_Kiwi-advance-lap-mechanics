@@ -6,12 +6,12 @@ A fake car is driven through the checkpoint spheres on a fake clock.
     python3 Beam_mp/bench/bench.py            run the scenarios
     python3 Beam_mp/bench/bench.py --break    prove the bench can fail (sabotages timing)
 
-Server runs on Lua 5.4 (what BeamMP-Server embeds), client on LuaJIT (what BeamNG embeds).
+Server runs on Lua 5.3 (what Darren's BeamMP-Server v3.9.3 reports), client on LuaJIT (what BeamNG embeds).
 Nothing here touches a real server. It is a model of the plumbing, not a measurement of it:
 if the real game never calls onUpdate, this bench cannot know.
 """
 import json, os, sys, shutil, tempfile, pathlib
-from lupa import lua54, luajit21
+from lupa import lua53, luajit21
 
 ROOT   = pathlib.Path(__file__).resolve().parent.parent
 SERVER = ROOT / "Resources/Server/kkLap/main.lua"
@@ -30,7 +30,7 @@ client_log = []                          # log() lines from the client
 events_to_client = []                    # (pid, name, json) sent by server
 
 # ------------------------------------------------------------------ server state
-S = lua54.LuaRuntime(unpack_returned_tuples=True)
+S = lua53.LuaRuntime(unpack_returned_tuples=True)
 s_handlers = {}                          # event name -> lua function name
 
 def s_register(ev, fn): s_handlers[ev] = fn

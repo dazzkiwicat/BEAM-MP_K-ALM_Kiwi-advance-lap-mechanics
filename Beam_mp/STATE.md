@@ -9,7 +9,7 @@ keying everything by vehicle id makes it work anyway at no cost, so that stays.
 
 ## Where we are
 Skeleton written, syntax-checked, zipped, and **bench-tested end to end** (bench/bench.py:
-real server Lua on 5.4 + real client Lua on LuaJIT, BeamMP calls stubbed and wired together,
+real server Lua on 5.3 + real client Lua on LuaJIT, BeamMP calls stubbed and wired together,
 fake car driven through the spheres). 14 checks pass; `--break` proves the bench can fail.
 **Never run on a real server yet.** The bench models the plumbing; it cannot see whether
 the game really calls onUpdate.
@@ -58,10 +58,14 @@ Next move is the first live load on the Linux test server via Pterodactyl.
 ## Before any upload
     python3 Beam_mp/tools/check_lua.py && python3 Beam_mp/bench/bench.py && python3 Beam_mp/tools/build_client_zip.py
 
+## Live test log
+- 26/10 22:31 server time: main.lua and kkLap.zip uploaded via Pterodactyl to
+  /home/container/Resources/..., restart, console shows "[KKLAP][I] kkLap loaded on Linux".
+  Server is BeamMP-Server v3.9.3, Lua 5.3.5, 31 client mods, max 10 clients. (Darren, paste)
+
 ## First live test, in order
-1. Pterodactyl: upload Resources/Server/kkLap/main.lua and Resources/Client/kkLap.zip
-   to the matching folders. Restart server.
-2. Console should show: [KKLAP][I] kkLap loaded on Linux   (if not: casing or path)
+1. DONE. Plugin loads on the real server.
+2. DONE. Console line seen.
 3. Join in game. kkLap.log should get: [C<pid>] extension loaded, then cfg received.
 4. Wait 10 s. kkLap.log should get "alive, own vehicles: <id>". If missing, onUpdate
    isn't wired: that's the first bug to fix.
