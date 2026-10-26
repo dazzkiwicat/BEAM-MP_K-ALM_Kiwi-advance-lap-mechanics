@@ -30,6 +30,7 @@ Runs the real server and client Lua against each other with fake BeamMP calls an
     /lap undo          remove the last one
     /lap clear         remove all
     /lap reset         wipe timing, keep checkpoints
+    /lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
     /lap debug on|off  forward client debug lines to the server log
     /lap set minLapMs 5000
 
@@ -45,7 +46,15 @@ Never put a colon in an event name. BeamMP splits `name:data` at the first colon
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
 
+## What you see (v0.4.0)
+Every checkpoint is drawn as the exact sphere the timer uses, label floating above it:
+start/finish green, the rest orange, and the one YOUR car has to hit next in blue.
+What you see is what triggers, so a wrong radius shows up before a wrong lap does.
+Drawn with the same two FFI calls BeamMP uses for its own name tags. If they are missing
+the markers vanish and the timer still runs; kkLap.log says "markers NOT available".
+
 ## What is BeamMP and what is BeamNG in the client file
-BeamMP: TriggerServerEvent, AddEventHandler, MPVehicleGE.isOwn.
-BeamNG game Lua: be:getObjectByID, be:getPlayerVehicle, veh:getPosition, guihooks.trigger, log, jsonEncode/jsonDecode.
+BeamMP: TriggerServerEvent, AddEventHandler, MPVehicleGE.getOwnMap.
+BeamNG game Lua: be:getObjectByID, be:getPlayerVehicle, veh:getPosition, veh:getID, guihooks.trigger,
+log, jsonEncode/jsonDecode, ffi.C.BNG_DBG_DRAW_Sphere, ffi.C.BNG_DBG_DRAW_TextAdvanced, color().
 Server file is 100% BeamMP server API (MP.*, Util.Json*).

@@ -21,8 +21,8 @@ Bugs the bench caught on its first run (26/10), both fixed:
   Rule: never put ':' in an event name. Data may contain colons, names may not.
 Darren has previously had a server plugin load and print to the console (chat 26/10),
 so the Resources/Server path and onInit are known to work on his setup.
-Live status 26/10 23:18: **v0.3.0 runs on the real server and the real PC, wire proven both
-ways** ("[C0] cfg received" in kkLap.log). Next move: /lap mark twice, then a lap.
+Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
+work"). v0.4.0 adds world markers, bench-passed, NOT yet live. Next move: upload v0.4.0, screenshot.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -107,6 +107,26 @@ ways** ("[C0] cfg received" in kkLap.log). Next move: /lap mark twice, then a la
   NEXT (one step): in game, at the start line, type /lap mark. Expect chat "[LAP] checkpoint 1
   marked at x y z r=8.0" and config.json appearing beside main.lua.
 
+- 26/10 ~23:30 server time: **FIRST LIVE LAP TIMED.** /lap mark showed the marker lines in
+  chat, Darren drove the loop, "seems to work" (Darren, chat 26/10). Steps 5 done. Screenshot
+  of kkLap.log for that lap not taken; the alive and cross lines are UNCHECKED on the real
+  server but the lap toast could not appear without them.
+  Darren's ask: see the start/finish and checkpoints in the world, like single-player.
+  -> v0.4.0 written and bench-passed (19 checks): checkpoint spheres drawn in the world
+  from onPreRender with the two FFI draw calls BeamMP's own MPVehicleGE.lua uses for name
+  tags (BNG_DBG_DRAW_Sphere, BNG_DBG_DRAW_TextAdvanced, color()), fetched inside a pcall so
+  a missing call means no markers, not a dead mod. /lap markers on|off. Alive line moved
+  above the empty-checkpoint exit (flaw b above, fixed). Old config.json gets markers=true.
+  UNCHECKED: that those FFI calls draw on Darren's 0.40 build. Evidence for: BeamMP v4.23.1
+  (the 0.40 build) still calls them (cloned source). The first screenshot decides.
+  The single-player race-gate look (flags, arch) is NOT this: searched the web 26/10, no
+  public name for that GE Lua API; BeamNG's game Lua ships inside the install folder, not
+  online. Optional later: Darren pastes a dir listing of <BeamNG install>\lua\ge\extensions
+  (or says it isn't there) and I can look for the real race marker file by name.
+  NEXT (one step): upload main.lua v0.4.0 and kkLap_v0.4.0.zip, DELETE kkLap_v0.3.0.zip,
+  restart, rejoin, screenshot. Expect blue/green/orange translucent balls on the track with
+  labels; kkLap.log "[C0] extension v0.4.0 loaded, markers available".
+
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
@@ -115,8 +135,9 @@ ways** ("[C0] cfg received" in kkLap.log). Next move: /lap mark twice, then a la
 4. MOVED after step 5: the alive line only fires once a checkpoint exists (flaw, see log).
    After the first /lap mark, wait 10 s: "alive, own vehicles: <id>" must appear. If it
    doesn't, onUpdate isn't wired: that's the first bug to fix.
-5. /lap mark at a start line, drive 50 m, /lap mark again, drive round, cross both.
-   Expect "timing started", a split, then a LAP line.
+5. DONE ~23:30. /lap mark at a start line, drive 50 m, /lap mark again, drive round, cross both.
+   "timing started", a split, then a LAP line. Darren: "seems to work".
+6. OPEN. v0.4.0: markers visible in the world, blue one is your next checkpoint.
 
 ## Lap timer features to add once the skeleton runs (in order)
 1. Per-driver best / last / delta to best, shown on screen as a small HUD app, not toasts.

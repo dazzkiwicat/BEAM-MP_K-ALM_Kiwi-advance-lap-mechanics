@@ -128,6 +128,7 @@ def tick(dt_s=0.05, ms=None):
     """advance the clock and run one client frame"""
     clock_ms[0] += int((ms if ms is not None else dt_s*1000))
     M.onUpdate(dt_s)
+    M.onPreRender(dt_s)                           # markers code runs every frame too (no ffi here: no-op draw)
 def drive(vid, path, step_ms=100):
     """move vid through a list of points, one frame per point"""
     for p in path:
@@ -138,6 +139,14 @@ failures = []
 def check(cond, what):
     print(("ok   " if cond else "FAIL ") + what)
     if not cond: failures.append(what)
+
+# ------------------------------------------------------------------ scenario 0: empty track still proves the loop is alive
+# v0.3.0 put the 5 s alive line below the "no checkpoints" exit, so the live test could not
+# see onUpdate running until a checkpoint existed (26/10). Must fire with zero checkpoints.
+own_vids[:] = [100, 101]; seat0_vid[0] = 100
+positions[100] = (0, 0, 0);   positions[101] = (500, 500, 0)
+for _ in range(120): tick()                      # 6 s of frames, no checkpoints yet
+check(any("alive, own vehicles: 100,101" in l for l in client_log), "alive line fires with zero checkpoints")
 
 # ------------------------------------------------------------------ scenario 1: mark a track from the car
 own_vids[:] = [100, 101]; seat0_vid[0] = 100
@@ -195,6 +204,12 @@ check(not any("entered cp" in l for l in client_log[mark:]), "after /lap clear t
 check(any("[KKLAP][C1]" in l for l in server_log), "client debug lines reach the server log with the [C<pid>] tag")
 check((work / "Resources/Server/kkLap/kkLap.log").exists(), "kkLap.log file is written")
 check(not dropped, "no client event was dropped by the server for an unknown name (first: %s)" % (dropped[:1] or "-"))
+
+# ------------------------------------------------------------------ scenario 6: /lap markers off reaches every client
+mark = len(server_log)
+chat("/lap markers off")
+check(any("markers=false" in l for l in server_log[mark:]), "/lap markers off is pushed to the client config")
+check(any("markers false" in m for _, m in chat_out), "chat confirms markers off")
 
 print()
 print("bench dir:", work)

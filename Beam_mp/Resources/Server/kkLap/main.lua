@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.3.0"   -- same number as the client zip it was built with
+local VERSION  = "0.4.0"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -37,6 +37,7 @@ local defaultCfg = {
     debug        = true,     -- forward client debug lines and print server ones
     minLapMs     = 5000,     -- laps shorter than this are rejected (teleport, respawn)
     defaultRadius= 8,        -- metres, used by /lap mark when no radius given
+    markers      = true,     -- every client draws the checkpoint spheres in the world (v0.4.0)
     checkpoints  = {},
 }
 cfg = nil   -- global on purpose: other kkLap files (if any) can see it
@@ -163,7 +164,7 @@ function onChatMessage(pid, name, msg)
 
     if cmd == "help" then
         say(pid, "/lap mark [radius]  - checkpoint at your car (1st = start/finish)")
-        say(pid, "/lap list | clear | undo | reset | debug on|off")
+        say(pid, "/lap list | clear | undo | reset | debug on|off | markers on|off")
         say(pid, "/lap set minLapMs <n> | set defaultRadius <n>")
     elseif cmd == "mark" then
         -- ask the client for its current vehicle position; reply comes to onPosReply
@@ -179,6 +180,8 @@ function onChatMessage(pid, name, msg)
         table.remove(cfg.checkpoints); runs = {}; saveCfg(); sendCfg(-1); say(pid, "last checkpoint removed, " .. #cfg.checkpoints .. " left")
     elseif cmd == "reset" then
         runs = {}; sendCfg(-1); say(pid, "all timing reset")   -- sendCfg also clears every client's state
+    elseif cmd == "markers" then
+        cfg.markers = (args[3] == "on"); saveCfg(); sendCfg(-1); say(pid, "markers " .. tostring(cfg.markers))
     elseif cmd == "debug" then
         cfg.debug = (args[3] == "on"); saveCfg(); sendCfg(-1); say(pid, "debug " .. tostring(cfg.debug))
     elseif cmd == "set" and args[3] and tonumber(args[4]) then
