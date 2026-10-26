@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.6.0'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.7.0'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent }
@@ -27,9 +27,22 @@ local function dbg(msg)
 end
 
 local function toast(msg, ttl)
-    -- BeamNG UI message. Same call BeamMP's own MPVehicleGE.lua uses.
+    -- BeamNG UI message, small, top left. Same call BeamMP's own MPVehicleGE.lua uses.
     guihooks.trigger('Message', { ttl = ttl or 5, msg = msg, icon = 'timer' })
 end
+
+-- Big centred flash, the one the game's own scenarios use for 3-2-1-GO and lap times.
+-- Needs the "Race Countdown" UI app on the player's layout (docs.beammp.com/beamng/lua-snippets).
+-- Without it nothing shows and nothing breaks, which is why every flash also sends a toast.
+-- sound: a Lua string the UI runs, e.g. Engine.Audio.playOnce('AudioGui', 'event:UI_CountdownGo'); 0 = none.
+local function flash(msg, ttl, big, sound)
+    guihooks.trigger('ScenarioFlashMessage', { { msg, ttl or 2, sound or 0, big ~= false } })
+end
+local function beep(name) return "Engine.Audio.playOnce('AudioGui', 'event:UI_" .. name .. "')" end
+
+-- Mid-size persistent centre text: the running lap clock. Needs the "Race Realtime Display" UI app.
+local function realtime(msg) guihooks.trigger('ScenarioRealtimeDisplay', { msg = msg }) end
+local lapClock  = { running = false, t = 0, hold = 0, holdMsg = nil, shown = 0 }
 
 -- ----------------------------------------------------- world drawing (BeamNG FFI)
 -- The same two draw calls BeamMP's own MPVehicleGE.lua uses for name tags and blobs:
@@ -64,8 +77,10 @@ end
 local function onCfg(data)
     local d = jsonDecode(data)
     if not d then dbg('bad cfg json'); return end
+    if d.yourPid ~= nil then M.myPid = d.yourPid end   -- server stamps the receiver's pid on a direct send
     cfg = d
     if cfg.markers == nil then cfg.markers = true end   -- config.json from before v0.4.0
+    lapClock.running = false; realtime('')              -- track changed or reset: clock off
     if draw.ok then buildColours(cfg.markerAlpha) end   -- /lap set markerAlpha takes effect here
     state = {}                                    -- checkpoints changed, start fresh
     dbg(string.format('cfg received: %d checkpoints, debug=%s, markers=%s',
@@ -81,19 +96,35 @@ end
 local function onLap(data)
     local d = jsonDecode(data)
     if not d then return end
-    toast(string.format('%s  lap %d  %s  %s  best %s', d.name, d.laps, M.fmt(d.lapMs), sectorsText(d.sectors), M.fmt(d.bestMs)), 6)
+    local last = d.sectors and d.sectors[#d.sectors]
+    -- toast: lap time and the LAST sector only. 17 sectors in one toast was a wall (26/10 screenshot).
+    -- The full sector list is in the chat line and in laps.log on the server.
+    toast(string.format('%s  lap %d  %s   last sector %s   best %s', d.name, d.laps, M.fmt(d.lapMs),
+          last and string.format('%.1f', last / 1000) or '-', M.fmt(d.bestMs)), 6)
+    if d.pid == M.myPid then
+        flash('LAP  ' .. M.fmt(d.lapMs), 4, true, beep('CountdownGo'))
+        lapClock.hold = 4; lapClock.holdMsg = 'LAP  ' .. M.fmt(d.lapMs); lapClock.t = 0; lapClock.shown = 0
+        realtime(lapClock.holdMsg)            -- now, not next frame
+    end
 end
 
 local function onSplit(data)
     local d = jsonDecode(data)
     if not d then return end
     -- sector = since the previous checkpoint, split = since the line, speed = entering this sphere
-    toast(string.format('S%d  %.1f s   split %s   %d km/h', d.cp - 1, (d.sectorMs or 0) / 1000, M.fmt(d.splitMs), d.kph or 0), 4)
+    local sector = string.format('%.1f', (d.sectorMs or 0) / 1000)
+    toast(string.format('S%d  %s s   split %s   %d km/h', d.cp - 1, sector, M.fmt(d.splitMs), d.kph or 0), 4)
+    flash(string.format('S%d   %s', d.cp - 1, sector), 2.5, true)
 end
 
 local function onInfo(data)
     local d = jsonDecode(data)
-    if d and d.msg then dbg('server: ' .. d.msg) end
+    if not (d and d.msg) then return end
+    dbg('server: ' .. d.msg)
+    if d.msg == 'timing started' or d.msg == 'GO start' then
+        lapClock.running = true; lapClock.t = 0
+        if d.msg == 'timing started' then flash('TIMING STARTED', 1.5, false) end
+    end
 end
 
 -- shared race start. Server counts down for everyone; at GO every own car still in the
@@ -117,6 +148,8 @@ local function onCount(data)
     end
     counting = true
     toast(tostring(d.n), 1)
+    local snd = (d.n <= 3) and beep('Countdown' .. (4 - d.n)) or beep('Countdown1')
+    flash(tostring(d.n), 1.0, true, snd)
 end
 
 -- Called from vehicle Lua (kkLapVE.lua) the frame a horn comes on. Honk in the start
@@ -141,6 +174,7 @@ local function onVehicleSpawned(vid) loadVE(vid) end
 local function onGo(data)
     counting = false
     toast('GO!', 2)
+    flash('GO!', 2.0, true, beep('CountdownGo'))
     local cp1 = cfg.checkpoints[1]
     if not cp1 then return end
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
@@ -182,6 +216,19 @@ local function onUpdate(dt)
             local ids = {}
             for vid in pairs(MPVehicleGE.getOwnMap()) do table.insert(ids, tostring(vid)) end
             dbg('alive, own vehicles: ' .. (#ids > 0 and table.concat(ids, ',') or 'none'))
+        end
+    end
+
+    -- running lap clock on screen. CLIENT-SIDE ESTIMATE from the moment the server said
+    -- "timing started": the official time is the server's and arrives with the lap toast.
+    if lapClock.running then
+        lapClock.t = lapClock.t + dt
+        lapClock.shown = lapClock.shown + dt
+        if lapClock.hold > 0 then
+            lapClock.hold = lapClock.hold - dt
+            if lapClock.shown > 0.5 then lapClock.shown = 0; realtime(lapClock.holdMsg) end
+        elseif lapClock.shown > 0.1 then
+            lapClock.shown = 0; realtime(M.fmt(math.floor(lapClock.t * 1000)))
         end
     end
 
@@ -287,4 +334,5 @@ M.onExtensionLoaded = onExtensionLoaded
 M.onUpdate          = onUpdate
 M.onPreRender       = onPreRender
 M.onVehicleSpawned  = onVehicleSpawned
+M.myPid             = nil     -- our player id, stamped by the server on the config it sends us
 return M

@@ -119,7 +119,13 @@ C.globals().be = C.table(
     getObjectByID=lambda self, vid: Veh(vid) if vid in positions else None,
     getPlayerVehicle=lambda self, seat: Veh(seat0_vid[0]) if seat0_vid[0] else None,
 )
-C.globals().guihooks = C.table(trigger=lambda name, t: toasts.append(t["msg"]))
+def ui(name, t):
+    if name == "Message":               toasts.append(t["msg"])
+    elif name == "ScenarioFlashMessage": flashes.append(t[1][1])      # {{msg, ttl, sound, big}}
+    elif name == "ScenarioRealtimeDisplay": realtime[0] = t["msg"]
+C.globals().guihooks = C.table(trigger=ui)
+flashes  = []
+realtime = [""]
 C.globals().log = lambda lvl, origin, msg: client_log.append("[%s] %s" % (lvl, msg))
 C.globals().jsonEncode = lambda t: json.dumps(lua_to_py(t))
 C.globals().jsonDecode = lambda s: py_to_lua(C, json.loads(s))
@@ -199,6 +205,10 @@ if got:
 splits = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_split"]
 check(splits and splits[-1]["kph"] == 100 and splits[-1]["sectorMs"] > 0, "split event carries sector time and speed")
 check(any("S1" in t and "100 km/h" in t for t in toasts), "client showed the sector toast with speed")
+check(any(f.startswith("S1") for f in flashes), "sector time flashed big in the centre")
+check(any(f == "LAP  0:05.100" for f in flashes), "own lap time flashed big in the centre")
+check("TIMING STARTED" in flashes, "timing started flashed")
+check(realtime[0] == "LAP  0:05.100", "running clock shows the finished lap for a few seconds")
 check(any(pid == -1 and "Darren  lap 1" in m for pid, m in chat_out), "lap announced to everyone in chat")
 check(pathlib.Path("Resources/Server/kkLap/laps.log").exists(), "laps.log written")
 check(pathlib.Path("Resources/Server/kkLap/times.json").exists(), "times.json written")
@@ -252,6 +262,7 @@ M.onHorn(101)                                                 # second honk duri
 check(any(pid == -1 and "race start in 5" in m for pid, m in chat_out[mark_chat:]), "server announces the countdown to everyone")
 for _ in range(110): tick()                                   # 5.5 s: 4,3,2,1, GO
 check(any(pid == -1 and m.endswith("GO!") for pid, m in chat_out[mark_chat:]), "GO announced to everyone")
+check(flashes[-6:] == ["5", "4", "3", "2", "1", "GO!"], "countdown flashed big 5..1 GO (%s)" % flashes[-6:])
 check(any("vid 100 GO start" in l for l in client_log[mark_cl:]) and any("vid 101 GO start" in l for l in client_log[mark_cl:]),
       "both parked cars take the GO start")
 gos = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_go"]

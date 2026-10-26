@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 (honk in the bubble -> shared countdown -> GO; markers flash/grey; live markerAlpha) bench-passed 43 checks, NOT yet live. Next move: upload v0.6.0, park, honk.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, NOT yet live. Next move: upload v0.7.0; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -188,6 +188,21 @@ v0.6.0 (honk in the bubble -> shared countdown -> GO; markers flash/grey; live m
   Seen in the picture: 17 sectors in one toast is a wall. Fix for next version: toast shows
   the lap time and the last sector only; the full list stays in chat and laps.log.
 
+- 26/10: **HONK COUNTDOWN WORKS LIVE** (Darren: "yes honk worked!"). Step 8 done. So the
+  vehicle-side file loads per car, electrics.values.horn reads, queueGameEngineLua reaches
+  our GE extension, MP.CreateEventTimer ticks. All now checked on the real server.
+  Darren: writing too small to read; make the checkpoint times larger and flash.
+  -> v0.7.0, bench 48 checks: ScenarioFlashMessage (big, centred, the game's own 3-2-1-GO
+  display, with the UI_Countdown1/2/3/Go sounds) for countdown, GO, every sector, own lap;
+  ScenarioRealtimeDisplay for a running lap clock (client estimate, labelled so). Both from
+  docs.beammp.com/beamng/lua-snippets (web, 26/10). Each needs a stock UI app on the
+  player's layout: "Race Countdown" and "Race Realtime Display" (Alt+U). UNCHECKED whether
+  the default freeroam layout has them; toasts stay as the fallback either way.
+  Lap toast now shows the last sector only (17-sector wall fixed). Server stamps yourPid on
+  the config it sends each player so the client knows which laps are its own.
+  NEXT (one step): upload v0.7.0, restart, drive through a checkpoint. If the big centre
+  text does not appear: Alt+U, add "Race Countdown" and "Race Realtime Display", try again.
+
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
@@ -200,7 +215,8 @@ v0.6.0 (honk in the bubble -> shared countdown -> GO; markers flash/grey; live m
    "timing started", a split, then a LAP line. Darren: "seems to work".
 6. DONE. v0.4.0 markers visible in the world (Darren: "works well").
 7. OPEN. v0.6.0: chat line per lap with sectors and km/h; laps.log on the server.
-8. OPEN. v0.6.0: honk in the bubble -> countdown -> GO -> laps count from GO. Markers see-through?
+8. DONE. v0.6.0 honk -> countdown -> GO works live. Markers see-through: still UNCHECKED.
+9. OPEN. v0.7.0: big centre text for sectors and laps; running clock. UI apps on layout?
 
 ## Lap timer features to add once the skeleton runs (in order)
 1. Per-driver best / last / delta to best, shown on screen as a small HUD app, not toasts.

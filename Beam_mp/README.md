@@ -54,6 +54,15 @@ Never put a colon in an event name. BeamMP splits `name:data` at the first colon
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
 
+## Big writing on screen (v0.7.0)
+Countdown, GO, every sector time and your own lap time flash BIG in the centre of the
+screen, with the game's own countdown beeps. A running lap clock sits mid-screen (a
+client-side estimate; the official time is the server's and comes with the lap toast).
+Both need two stock BeamNG UI apps on your layout, one time per player: press Alt+U,
+add "Race Countdown" and "Race Realtime Display", Alt+U again to leave. (App names from
+docs.beammp.com/beamng/lua-snippets; UNCHECKED whether a fresh freeroam layout already has
+them.) Without them nothing breaks: the small top-left toasts still carry everything.
+
 ## Racing together (v0.6.0)
 Everyone parks in the start bubble. Anyone honks. Chat and screen count 5, 4, 3, 2, 1, GO.
 At GO every car still inside the bubble starts its lap from the same server instant, so the

@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.6.0"   -- same number as the client zip it was built with
+local VERSION  = "0.7.0"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -78,7 +78,10 @@ end
 
 -- push the whole config to one player (-1 = everyone)
 local function sendCfg(pid)
+    -- a direct send carries the receiver's own player id, so the client knows which laps are its own
+    cfg.yourPid = (pid ~= -1) and pid or nil
     MP.TriggerClientEventJson(pid, "kkLap_cfg", cfg)
+    cfg.yourPid = nil
     dbg("cfg sent to " .. pid)
 end
 
