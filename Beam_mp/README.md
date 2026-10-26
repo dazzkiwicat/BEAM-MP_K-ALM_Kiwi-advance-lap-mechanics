@@ -7,7 +7,7 @@ so every message carries the vehicle id.
 ## Layout (drop straight onto the BeamMP server)
     Resources/Server/kkLap/main.lua                      server plugin
     Resources/Server/kkLap/config.json                   written by the plugin, edit live via /lap
-    Resources/Client/kkLap/scripts/modScript.lua          client mod source
+    Resources/Client/kkLap/scripts/kkLap/modScript.lua    client mod source
     Resources/Client/kkLap/lua/ge/extensions/kkLap.lua
     Resources/Client/kkLap.zip                            built by tools/build_client_zip.py
 

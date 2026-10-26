@@ -63,9 +63,18 @@ Next move is the first live load on the Linux test server via Pterodactyl.
   /home/container/Resources/..., restart, console shows "[KKLAP][I] kkLap loaded on Linux".
   Server is BeamMP-Server v3.9.3, Lua 5.3.5, 31 client mods, max 10 clients. (Darren, paste)
 
+- 26/10 22:32: Darren joined (player 0). kkLap.log shows "cfg sent to 0" from onPlayerJoin
+  and NOTHING from the client: no "extension loaded", no alive line. Client mod did not run,
+  or the zip never reached the PC. (Darren, paste)
+  Change made: modScript.lua moved to scripts/kkLap/modScript.lua to match BeamMP's own
+  scripts/BeamMP/modScript.lua (cloned source). Guide diagram showed it one level up. UNCHECKED
+  whether that was the cause; the beamng.log grep on the PC decides.
+
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
+2b. OPEN. Re-upload the rebuilt kkLap.zip, restart, rejoin. Check beamng.log on the PC for
+    "KKLAP". A "modScript ran" line means the zip arrives and runs.
 3. Join in game. kkLap.log should get: [C<pid>] extension loaded, then cfg received.
 4. Wait 10 s. kkLap.log should get "alive, own vehicles: <id>". If missing, onUpdate
    isn't wired: that's the first bug to fix.
