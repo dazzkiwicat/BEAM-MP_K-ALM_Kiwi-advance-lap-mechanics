@@ -52,7 +52,7 @@ Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
 Each checkpoint shows the driver a toast: sector time (since the previous checkpoint), split
 (since the line) and the speed entering the sphere, read straight off the car. Each finished
 lap is announced to everyone in chat, with the sector list and the speed over the line:
-    [LAP] Darren  lap 1  0:05.100  [1.2 | 3.9]  best 0:05.100  @100 km/h
+    [LAP] Darren  lap 1  0:05.100  [0.2 | 4.9]  best 0:05.100  @100 km/h
 The server writes two files beside main.lua: laps.log (one line per lap, append only, the
 record) and times.json (best lap per player, what /lap times reads). /lap clear wipes
 times.json for the new track; laps.log is never deleted.
