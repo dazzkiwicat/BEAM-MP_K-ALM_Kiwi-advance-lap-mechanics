@@ -35,6 +35,7 @@ Runs the real server and client Lua against each other with fake BeamMP calls an
     /lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
     /lap debug on|off  forward client debug lines to the server log
     /lap set minLapMs 5000
+    /lap set markerAlpha 40   see-through-ness of the markers, 0 invisible, 255 solid (v0.5.2)
 
 ## Debug: read it slowly
 The console scrolls too fast. The plugin appends every line to

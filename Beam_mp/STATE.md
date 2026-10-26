@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-plus v0.5.1 (crossed markers flash then grey) bench-passed 32 checks, NOT yet live. Next move: upload v0.5.1.
+plus v0.5.2 (flash/grey markers, live markerAlpha) bench-passed, NOT yet live. Next move: upload v0.5.2, try /lap set markerAlpha 10.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -149,6 +149,14 @@ plus v0.5.1 (crossed markers flash then grey) bench-passed 32 checks, NOT yet li
   v0.5.0 was never uploaded; go straight to v0.5.1.
   NEXT (one step): upload main.lua v0.5.1 + kkLap_v0.5.1.zip, delete the old zip, restart,
   drive a lap, screenshot: chat lap line, a white flash, a grey done marker.
+
+- 26/10: Darren: "they have to be see thru". UNCHECKED which version he saw and whether the
+  sphere draw honours alpha at all (BeamMP uses 127 for its blobs). -> v0.5.2: one number
+  cfg.markerAlpha (default 40 of 255, was 70-120) drives every marker colour, settable live
+  with /lap set markerAlpha <n>, no re-upload to tune. If 10 still looks solid, the draw call
+  ignores alpha and the next move is a different shape (ring of small spheres), not a number.
+  NEXT (one step): upload v0.5.2 (main.lua + zip), restart, look; then /lap set markerAlpha 10
+  and look again. Two looks settle whether alpha works.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

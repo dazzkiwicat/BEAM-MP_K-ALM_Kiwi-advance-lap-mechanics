@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.5.1"   -- same number as the client zip it was built with
+local VERSION  = "0.5.2"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -40,6 +40,7 @@ local defaultCfg = {
     minLapMs     = 5000,     -- laps shorter than this are rejected (teleport, respawn)
     defaultRadius= 8,        -- metres, used by /lap mark when no radius given
     markers      = true,     -- every client draws the checkpoint spheres in the world (v0.4.0)
+    markerAlpha  = 40,       -- marker transparency 0..255, /lap set markerAlpha 40 (v0.5.2)
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
     checkpoints  = {},
@@ -223,7 +224,7 @@ function onChatMessage(pid, name, msg)
         say(pid, "/lap mark [radius]  - checkpoint at your car (1st = start/finish)")
         say(pid, "/lap times  - best lap per player, with sectors")
         say(pid, "/lap list | clear | undo | reset | debug on|off | markers on|off | announce on|off")
-        say(pid, "/lap set minLapMs <n> | set defaultRadius <n>")
+        say(pid, "/lap set minLapMs <n> | set defaultRadius <n> | set markerAlpha 0-255")
     elseif cmd == "mark" then
         -- ask the client for its current vehicle position; reply comes to onPosReply
         MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]) })

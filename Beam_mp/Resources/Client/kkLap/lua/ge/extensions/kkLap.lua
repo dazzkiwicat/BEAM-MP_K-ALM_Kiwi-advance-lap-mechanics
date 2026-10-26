@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.5.1'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.5.2'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp = n, inside = bool }
@@ -38,21 +38,25 @@ end
 -- pcall: if the game build moved it (or we are on the bench, where there is no ffi) the
 -- markers silently become no-ops and the TIMER STILL WORKS. Markers are a luxury.
 local draw = { ok = false }
+-- Transparency is one number, cfg.markerAlpha (0 invisible .. 255 solid), set live with
+-- /lap set markerAlpha 40. Everything else is derived from it. v0.5.1 looked solid (Darren).
+local function buildColours(a)
+    a = math.max(0, math.min(255, math.floor(tonumber(a) or 40)))
+    draw.start = color(0, 220, 0, a)                          -- start/finish: green
+    draw.cp    = color(255, 150, 0, a)                        -- other checkpoints: orange
+    draw.next  = color(0, 160, 255, math.min(255, a + 20))    -- YOUR next one: blue, a touch stronger
+    draw.done  = color(120, 120, 120, math.floor(a / 2))      -- been through it: grey ghost
+    draw.flash = color(255, 255, 255, math.min(255, a * 2))   -- the 1.5 s after crossing: white
+    draw.fg    = color(255, 255, 255, 254)                    -- 254 not 255: BeamMP notes 255 breaks the bg alpha
+    draw.bg    = color(0, 0, 0, 160)
+end
 do
-    local ok, r = pcall(function()
-        return {
-            sphere = ffi.C.BNG_DBG_DRAW_Sphere,
-            text   = ffi.C.BNG_DBG_DRAW_TextAdvanced,
-            start  = color(0, 220, 0, 90),       -- start/finish: green
-            cp     = color(255, 150, 0, 70),     -- other checkpoints: orange
-            next   = color(0, 160, 255, 120),    -- the one YOUR car must hit next: blue, brighter
-            done   = color(120, 120, 120, 35),   -- already through it this lap: grey ghost
-            flash  = color(255, 255, 255, 200),  -- the 1.5 s after you go through one: white flash
-            fg     = color(255, 255, 255, 254),  -- 254 not 255: BeamMP notes 255 breaks the bg alpha
-            bg     = color(0, 0, 0, 160),
-        }
+    local ok = pcall(function()
+        draw.sphere = ffi.C.BNG_DBG_DRAW_Sphere
+        draw.text   = ffi.C.BNG_DBG_DRAW_TextAdvanced
+        buildColours(cfg.markerAlpha)
     end)
-    if ok and r then draw = r; draw.ok = true end
+    draw.ok = ok and draw.sphere ~= nil
 end
 
 -- ----------------------------------------------------- events from the server
@@ -61,6 +65,7 @@ local function onCfg(data)
     if not d then dbg('bad cfg json'); return end
     cfg = d
     if cfg.markers == nil then cfg.markers = true end   -- config.json from before v0.4.0
+    if draw.ok then buildColours(cfg.markerAlpha) end   -- /lap set markerAlpha takes effect here
     state = {}                                    -- checkpoints changed, start fresh
     dbg(string.format('cfg received: %d checkpoints, debug=%s, markers=%s',
         #cfg.checkpoints, tostring(cfg.debug), tostring(cfg.markers)))
