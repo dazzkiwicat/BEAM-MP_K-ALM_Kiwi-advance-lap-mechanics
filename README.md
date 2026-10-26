@@ -1,18 +1,6 @@
 kkLap - BeamMP lap timer that works with 0.40 split-screen (Linux server)
 Server plugin + client mod. Server keeps the clock and the checkpoints; clients only report "my vehicle entered checkpoint N". Split-screen is one client with two vehicles, so every message carries the vehicle id.
 
-Layout (drop straight onto the BeamMP server)
-Client zip holds three files: scripts/kkLap/modScript.lua, lua/ge/extensions/kkLap.lua (game side) and lua/vehicle/extensions/kkLap/kkLapVE.lua (inside each car, horn only). Resources/Server/kkLap/main.lua server plugin Resources/Server/kkLap/config.json written by the plugin, edit live via /lap Resources/Client/kkLap/scripts/kkLap/modScript.lua client mod source Resources/Client/kkLap/lua/ge/extensions/kkLap.lua Resources/Client/kkLap_v.zip built by tools/build_client_zip.py
-
-Linux is case-sensitive. Resources, Server, Client, kkLap exactly as above, or the server loads nothing and says nothing.
-
-Build the client zip
-Bump M.VERSION in kkLap.lua and the modScript log line first. The zip takes its name from it. When uploading a new version, delete the old kkLap_v*.zip from the server, or players get both. python3 Beam_mp/tools/build_client_zip.py
-
-Bench test before uploading (no server needed)
-pip install lupa
-python3 Beam_mp/bench/bench.py
-Runs the real server and client Lua against each other with fake BeamMP calls and a fake car.
 
 In game
 
