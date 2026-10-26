@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.5.2"   -- same number as the client zip it was built with
+local VERSION  = "0.6.0"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -41,6 +41,8 @@ local defaultCfg = {
     defaultRadius= 8,        -- metres, used by /lap mark when no radius given
     markers      = true,     -- every client draws the checkpoint spheres in the world (v0.4.0)
     markerAlpha  = 40,       -- marker transparency 0..255, /lap set markerAlpha 40 (v0.5.2)
+    autoStart    = true,     -- a honk inside the start bubble starts a shared countdown (v0.6.0)
+    countdown    = 5,        -- seconds
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
     checkpoints  = {},
@@ -125,6 +127,44 @@ local function sortedBoard()
     return list
 end
 
+-- ------------------------------------------------- race start: shared countdown, one GO instant for all
+local race = { active = false, left = 0, tGo = nil }
+local function startCountdown(who)
+    if race.active then return end
+    if race.tGo and nowMs() - race.tGo < 10000 then return end       -- just started one, ignore the parked cars
+    if #cfg.checkpoints == 0 then return end
+    race.active = true
+    race.left   = math.max(1, math.floor(cfg.countdown))
+    say(-1, string.format("race start in %d  (%s)  - sit in the start bubble", race.left, who))
+    MP.TriggerClientEventJson(-1, "kkLap_count", { n = race.left })
+    MP.CreateEventTimer("kkLap_tick", 1000)
+    log("I", "countdown started by " .. who)
+end
+function onTick()
+    if not race.active then MP.CancelEventTimer("kkLap_tick"); return end
+    race.left = race.left - 1
+    if race.left > 0 then
+        say(-1, tostring(race.left))
+        MP.TriggerClientEventJson(-1, "kkLap_count", { n = race.left })
+    else
+        MP.CancelEventTimer("kkLap_tick")
+        race.active = false
+        race.tGo    = nowMs()                 -- the one instant every GO-starter's lap counts from
+        say(-1, "GO!")
+        MP.TriggerClientEventJson(-1, "kkLap_go", { t = race.tGo })
+        log("I", "GO at " .. race.tGo)
+    end
+end
+function onArm(pid, data)                      -- client: "my car honked inside the start bubble"
+    if not cfg.autoStart then return end
+    startCountdown(MP.GetPlayerName(pid) or ("p" .. pid))
+end
+function onJump(pid, data)                     -- client: "my car left the bubble during the countdown"
+    local name = MP.GetPlayerName(pid) or ("p" .. pid)
+    say(-1, name .. " jumped the start")
+    log("I", name .. " jumped the start")
+end
+
 function onCross(pid, data)
     local ok, d = pcall(Util.JsonDecode, data)
     if not ok or type(d) ~= "table" then log("E", "bad cross payload from " .. pid .. ": " .. tostring(data)); return end
@@ -136,6 +176,17 @@ function onCross(pid, data)
     local n   = #cfg.checkpoints
 
     dbg(string.format("cross pid=%d vid=%s cp=%s expecting=%d", pid, tostring(d.vid), tostring(d.cp), r.nextCp))
+
+    if d.cp == 1 and d.go then
+        -- GO start (before the wrong-cp check: a car that rolled into the bubble expects cp2 already): the car was sitting in the bubble at GO. Its lap counts from the GO instant,
+        -- the same instant for everyone, not from when this packet arrived.
+        if race.tGo and t - race.tGo < 5000 then
+            r.lapStart = race.tGo; r.lastCp = race.tGo; r.sectors = {}
+            r.nextCp   = (n > 1) and 2 or 1
+            MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "GO start" })
+        end
+        return
+    end
 
     if d.cp ~= r.nextCp then
         -- wrong checkpoint: ignore, but tell the client in debug so a bad radius shows up
@@ -223,6 +274,8 @@ function onChatMessage(pid, name, msg)
     if cmd == "help" then
         say(pid, "/lap mark [radius]  - checkpoint at your car (1st = start/finish)")
         say(pid, "/lap times  - best lap per player, with sectors")
+        say(pid, "/lap race [seconds]  - countdown for everyone sitting in the start bubble (or honk in the bubble)")
+        say(pid, "/lap autostart on|off | set countdown <s>")
         say(pid, "/lap list | clear | undo | reset | debug on|off | markers on|off | announce on|off")
         say(pid, "/lap set minLapMs <n> | set defaultRadius <n> | set markerAlpha 0-255")
     elseif cmd == "mark" then
@@ -239,6 +292,11 @@ function onChatMessage(pid, name, msg)
         table.remove(cfg.checkpoints); runs = {}; saveCfg(); sendCfg(-1); say(pid, "last checkpoint removed, " .. #cfg.checkpoints .. " left")
     elseif cmd == "reset" then
         runs = {}; sendCfg(-1); say(pid, "all timing reset")   -- sendCfg also clears every client's state
+    elseif cmd == "race" then
+        if tonumber(args[3]) then cfg.countdown = tonumber(args[3]) end
+        startCountdown(name)
+    elseif cmd == "autostart" then
+        cfg.autoStart = (args[3] == "on"); saveCfg(); say(pid, "autostart " .. tostring(cfg.autoStart))
     elseif cmd == "times" then
         local list = sortedBoard()
         if #list == 0 then say(pid, "no laps yet") end
@@ -285,5 +343,8 @@ function onInit()
     MP.RegisterEvent("kkLap_dbg",          "onClientDbg")
     MP.RegisterEvent("kkLap_posreply",     "onPosReply")
     MP.RegisterEvent("kkLap_getcfg",       "onGetCfg")
+    MP.RegisterEvent("kkLap_arm",          "onArm")
+    MP.RegisterEvent("kkLap_jump",         "onJump")
+    MP.RegisterEvent("kkLap_tick",         "onTick")
     log("I", PLUGIN .. " v" .. VERSION .. " loaded on " .. MP.GetOSName())
 end

@@ -5,6 +5,8 @@ report "my vehicle entered checkpoint N". Split-screen is one client with two ve
 so every message carries the vehicle id.
 
 ## Layout (drop straight onto the BeamMP server)
+Client zip holds three files: scripts/kkLap/modScript.lua, lua/ge/extensions/kkLap.lua (game side)
+and lua/vehicle/extensions/kkLap/kkLapVE.lua (inside each car, horn only).
     Resources/Server/kkLap/main.lua                      server plugin
     Resources/Server/kkLap/config.json                   written by the plugin, edit live via /lap
     Resources/Client/kkLap/scripts/kkLap/modScript.lua    client mod source
@@ -30,6 +32,9 @@ Runs the real server and client Lua against each other with fake BeamMP calls an
     /lap undo          remove the last one
     /lap clear         remove all
     /lap reset         wipe timing, keep checkpoints
+    /lap race [sec]    countdown for everyone, GO starts every car in the start bubble (v0.6.0)
+    /lap autostart on|off  a honk inside the start bubble starts that countdown (default on)
+    /lap set countdown 5
     /lap times         best lap per player with sector times, top 10 (v0.5.0)
     /lap announce on|off  every sector to everyone in chat (default off; laps always announce)
     /lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
@@ -48,6 +53,16 @@ so one file tells the whole story. Game side, if ever needed: grep KKLAP beamng.
 Never put a colon in an event name. BeamMP splits `name:data` at the first colon on both
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
+
+## Racing together (v0.6.0)
+Everyone parks in the start bubble. Anyone honks. Chat and screen count 5, 4, 3, 2, 1, GO.
+At GO every car still inside the bubble starts its lap from the same server instant, so the
+times compare. A car that was on the line and leaves the bubble before GO gets
+"<name> jumped the start" in chat for all to see. Cars arriving later just cross the line as
+usual. /lap race does the same countdown without a honk.
+How the horn is heard: a tiny vehicle-side file (lua/vehicle/extensions/kkLap/kkLapVE.lua)
+is loaded into every car when it spawns, the same way BeamMP loads its own; it watches
+electrics.values.horn and calls kkLap.onHorn(id) on the game side once per press.
 
 ## What you get per lap (v0.5.0)
 Each checkpoint shows the driver a toast: sector time (since the previous checkpoint), split

@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-plus v0.5.2 (flash/grey markers, live markerAlpha) bench-passed, NOT yet live. Next move: upload v0.5.2, try /lap set markerAlpha 10.
+v0.6.0 (honk in the bubble -> shared countdown -> GO; markers flash/grey; live markerAlpha) bench-passed 43 checks, NOT yet live. Next move: upload v0.6.0, park, honk.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -158,6 +158,28 @@ plus v0.5.2 (flash/grey markers, live markerAlpha) bench-passed, NOT yet live. N
   NEXT (one step): upload v0.5.2 (main.lua + zip), restart, look; then /lap set markerAlpha 10
   and look again. Two looks settle whether alpha works.
 
+- 26/10: Darren: countdown when sitting in the start bubble so people race together; then
+  "even better: when 1 or more people honk inside the bubble it starts the timer for them,
+  that is very aligned with how we start races intuitively" (chat). -> v0.6.0, bench 43 checks:
+  honk inside the start bubble (before your first sector) -> server counts everyone down
+  in chat and on screen (MP.CreateEventTimer, 1 s ticks, cloned source TLuaEngine.cpp:982)
+  -> at GO every own car still in the bubble sends kkLap_cross{go=true} and the server sets
+  its lapStart to the ONE GO instant, so laps compare. Jump start (on the line at countdown
+  start, left the bubble before GO) announced to all. /lap race [sec], /lap autostart on|off,
+  /lap set countdown. Sit-still trigger dropped: honk is intentional, parking is not.
+  Horn comes from a vehicle-side file kkLapVE.lua loaded per car with
+  extensions.loadModulesInDirectory from the GE onVehicleSpawned hook (BeamMP does exactly
+  this, MPVehicleGE.lua:1683) and read as electrics.values.horn (UNCHECKED name on the read
+  side; BeamMP only shows the setter electrics.horn(bool), MPElectricsVE.lua:422).
+  Bench caught: GO start was rejected as "wrong cp" because a car rolling into the bubble
+  had already crossed cp1; GO block now sits above that check. Vehicle file benched in its
+  own LuaJIT VM: one call per press, number or boolean horn.
+  v0.5.2 never uploaded; go straight to v0.6.0.
+  NEXT (one step): upload main.lua v0.6.0 + kkLap_v0.6.0.zip, delete the old zip, restart,
+  park in the start bubble, honk. Expect chat "race start in 5 (Darren)", 4..1, GO!, then
+  the lap toast. If the honk does nothing: kkLap.log tells which side; look for "honked on
+  the line" ([C0]) and "countdown started by".
+
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
@@ -169,7 +191,8 @@ plus v0.5.2 (flash/grey markers, live markerAlpha) bench-passed, NOT yet live. N
 5. DONE ~23:30. /lap mark at a start line, drive 50 m, /lap mark again, drive round, cross both.
    "timing started", a split, then a LAP line. Darren: "seems to work".
 6. DONE. v0.4.0 markers visible in the world (Darren: "works well").
-7. OPEN. v0.5.0: chat line per lap with sectors and km/h; laps.log on the server.
+7. OPEN. v0.6.0: chat line per lap with sectors and km/h; laps.log on the server.
+8. OPEN. v0.6.0: honk in the bubble -> countdown -> GO -> laps count from GO. Markers see-through?
 
 ## Lap timer features to add once the skeleton runs (in order)
 1. Per-driver best / last / delta to best, shown on screen as a small HUD app, not toasts.

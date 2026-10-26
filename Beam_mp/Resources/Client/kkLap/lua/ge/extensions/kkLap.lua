@@ -14,10 +14,11 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.5.2'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.6.0'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
-local state    = {}          -- [vid] = { nextCp = n, inside = bool }
+local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent }
+local counting = false       -- a shared countdown is running (server says so)
 local lastDbg  = 0
 
 local function dbg(msg)
@@ -95,6 +96,70 @@ local function onInfo(data)
     if d and d.msg then dbg('server: ' .. d.msg) end
 end
 
+-- shared race start. Server counts down for everyone; at GO every own car still in the
+-- start bubble starts its lap from the server's GO instant.
+local function insideCp(veh, cp)
+    local p = veh:getPosition()
+    local dx, dy, dz = p.x - cp.x, p.y - cp.y, p.z - cp.z
+    return (dx*dx + dy*dy + dz*dz) <= (cp.r * cp.r)
+end
+
+local function onCount(data)
+    local d = jsonDecode(data)
+    if not d then return end
+    if not counting then
+        -- countdown just began: remember which own cars are on the line, for the jump-start call
+        local cp1 = cfg.checkpoints[1]
+        for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
+            local veh, s = be:getObjectByID(vid), state[vid]
+            if veh and s and cp1 then s.armed = insideCp(veh, cp1); s.jumpSent = false end
+        end
+    end
+    counting = true
+    toast(tostring(d.n), 1)
+end
+
+-- Called from vehicle Lua (kkLapVE.lua) the frame a horn comes on. Honk in the start
+-- bubble before your first sector = "we're ready", and the server counts everyone down.
+function M.onHorn(vid)
+    if not MPVehicleGE.getOwnMap()[vid] then return end       -- BeamMP: only our own cars
+    local veh, cp1 = be:getObjectByID(vid), cfg.checkpoints[1]
+    local s = state[vid]
+    if not (veh and cp1 and s) then return end
+    if counting or s.nextCp > 2 or not insideCp(veh, cp1) then return end
+    TriggerServerEvent('kkLap_arm', jsonEncode({ vid = vid }))
+    dbg(string.format('vid %d honked on the line, asked for a countdown', vid))
+end
+
+-- Put our vehicle-side file into every car that spawns (BeamNG GE hook; BeamMP does the same).
+local function loadVE(vid)
+    local veh = be:getObjectByID(vid)
+    if veh then veh:queueLuaCommand("extensions.loadModulesInDirectory('lua/vehicle/extensions/kkLap')") end
+end
+local function onVehicleSpawned(vid) loadVE(vid) end
+
+local function onGo(data)
+    counting = false
+    toast('GO!', 2)
+    local cp1 = cfg.checkpoints[1]
+    if not cp1 then return end
+    for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
+        local veh = be:getObjectByID(vid)
+        local s   = state[vid]
+        if veh and s and insideCp(veh, cp1) then
+            local vx, vy, vz = veh:getVelocityXYZ()
+            TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = 1, go = true,
+                kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6 }))
+            s.nextCp  = (#cfg.checkpoints > 1) and 2 or 1
+            s.inside  = true                 -- already in cp1: leaving it is not a crossing
+            s.started = true
+            s.flashCp = 1; s.flashT = 1.5
+            s.armed   = false
+            dbg(string.format('vid %d GO start', vid))
+        end
+    end
+end
+
 -- server asked "where is your car" for /lap mark. Use the player's current vehicle.
 local function onGetPos(data)
     local d   = jsonDecode(data) or {}
@@ -128,12 +193,19 @@ local function onUpdate(dt)
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
         local veh = be:getObjectByID(vid)             -- BeamNG: id -> object
         if veh then
-            local s  = state[vid] or { nextCp = 1, inside = false, started = false, flashCp = nil, flashT = 0 }
+            local s  = state[vid] or { nextCp = 1, inside = false, started = false, flashCp = nil, flashT = 0, armed = false }
             state[vid] = s
             local cp = cfg.checkpoints[s.nextCp]
             local p  = veh:getPosition()
             local dx, dy, dz = p.x - cp.x, p.y - cp.y, p.z - cp.z
             local inside = (dx*dx + dy*dy + dz*dz) <= (cp.r * cp.r)
+
+            -- jump start: a car that was on the line when the countdown began and leaves the
+            -- bubble before GO. Announced to everyone by the server. Shame is the penalty.
+            if counting and s.armed and not s.jumpSent and not insideCp(veh, cfg.checkpoints[1]) then
+                s.jumpSent = true
+                TriggerServerEvent('kkLap_jump', jsonEncode({ vid = vid }))
+            end
 
             if inside and not s.inside then
                 -- edge: just entered the sphere. Report once.
@@ -204,6 +276,9 @@ local function onExtensionLoaded()
     AddEventHandler('kkLap_split',  onSplit)
     AddEventHandler('kkLap_info',   onInfo)
     AddEventHandler('kkLap_getpos', onGetPos)
+    AddEventHandler('kkLap_count',  onCount)
+    AddEventHandler('kkLap_go',     onGo)
+    for vid, _ in pairs(MPVehicleGE.getOwnMap()) do loadVE(vid) end   -- cars that spawned before we loaded
     dbg('extension v' .. M.VERSION .. ' loaded, markers ' .. (draw.ok and 'available' or 'NOT available') .. ', asking server for config')
     TriggerServerEvent('kkLap_getcfg', '')   -- usually too early to arrive; onPlayerJoin on the server covers it (26/10)
 end
@@ -211,4 +286,5 @@ end
 M.onExtensionLoaded = onExtensionLoaded
 M.onUpdate          = onUpdate
 M.onPreRender       = onPreRender
+M.onVehicleSpawned  = onVehicleSpawned
 return M

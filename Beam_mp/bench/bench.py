@@ -21,6 +21,7 @@ SABOTAGE = "--break" in sys.argv
 # ------------------------------------------------------------------ fake world
 clock_ms   = [0]                         # server clock, we advance it by hand
 positions  = {}                          # vid -> (x, y, z)
+ve_cmds = []                             # (vid, lua string) queued into vehicle VMs
 velocities = {}                          # vid -> (vx, vy, vz) m/s
 own_vids   = []                          # vehicles the fake client owns
 seat0_vid  = [None]                      # what be:getPlayerVehicle(0) returns
@@ -36,6 +37,14 @@ S = lua53.LuaRuntime(unpack_returned_tuples=True)
 s_handlers = {}                          # event name -> lua function name
 
 def s_register(ev, fn): s_handlers[ev] = fn
+timers = {}                              # event name -> [interval_ms, next_fire_ms]  (MP.CreateEventTimer)
+def s_create_event_timer(name, ms, *_): timers[name] = [ms, clock_ms[0] + ms]
+def s_cancel_event_timer(name): timers.pop(name, None)
+def fire_due_timers():
+    for name, t in list(timers.items()):
+        while name in timers and clock_ms[0] >= t[1]:
+            t[1] += t[0]
+            S.globals()[s_handlers[name]]()
 def s_timer():
     return S.table(GetCurrent=lambda self: clock_ms[0] / 1000.0, Start=lambda self: None)
 def s_trigger_client_json(pid, name, tbl):
@@ -65,7 +74,7 @@ def py_to_lua(R, v):
     return v
 
 S.globals().MP = S.table(
-    RegisterEvent=s_register, CreateTimer=s_timer, TriggerClientEventJson=s_trigger_client_json,
+    RegisterEvent=s_register, CreateTimer=s_timer, CreateEventTimer=s_create_event_timer, CancelEventTimer=s_cancel_event_timer, TriggerClientEventJson=s_trigger_client_json,
     SendChatMessage=s_send_chat, GetPlayerName=lambda pid: "Darren" if pid == 1 else "p%d" % pid,
     GetOSName=lambda: "Linux", GetPlayerCount=lambda: 1,
 )
@@ -99,6 +108,7 @@ class Veh:
     def getPosition(self):
         x, y, z = positions[self.vid]; return C.table(x=x, y=y, z=z)
     def getID(self): return self.vid
+    def queueLuaCommand(self, cmd): ve_cmds.append((self.vid, cmd))
     def getVelocityXYZ(self):
         return velocities.get(self.vid, (0.0, 0.0, 0.0))    # m/s, three values like the game
 
@@ -130,6 +140,7 @@ def chat(msg): return S.globals()[s_handlers["onChatMessage"]](1, "Darren", msg)
 def tick(dt_s=0.05, ms=None):
     """advance the clock and run one client frame"""
     clock_ms[0] += int((ms if ms is not None else dt_s*1000))
+    fire_due_timers()
     M.onUpdate(dt_s)
     M.onPreRender(dt_s)                           # markers code runs every frame too (no ffi here: no-op draw)
 def drive(vid, path, step_ms=100):
@@ -148,6 +159,7 @@ def check(cond, what):
 # see onUpdate running until a checkpoint existed (26/10). Must fire with zero checkpoints.
 own_vids[:] = [100, 101]; seat0_vid[0] = 100
 positions[100] = (0, 0, 0);   positions[101] = (500, 500, 0)
+M.onVehicleSpawned(100); M.onVehicleSpawned(101)   # the game calls this per spawn; we load our vehicle file there
 for _ in range(120): tick()                      # 6 s of frames, no checkpoints yet
 check(any("alive, own vehicles: 100,101" in l for l in client_log), "alive line fires with zero checkpoints")
 
@@ -226,6 +238,58 @@ check(not any("entered cp" in l for l in client_log[mark:]), "after /lap clear t
 check(any("[KKLAP][C1]" in l for l in server_log), "client debug lines reach the server log with the [C<pid>] tag")
 check((work / "Resources/Server/kkLap/kkLap.log").exists(), "kkLap.log file is written")
 check(not dropped, "no client event was dropped by the server for an unknown name (first: %s)" % (dropped[:1] or "-"))
+
+# ------------------------------------------------------------------ scenario 7: two cars sit on the line -> countdown -> GO -> both laps count from GO
+positions[100] = (0, 0, 0); chat("/lap mark"); positions[100] = (100, 0, 0); chat("/lap mark 10")   # track again after /lap clear
+chat("/lap reset")
+positions[100] = (0, 0, 0); positions[101] = (2, 0, 0)        # both parked in the start bubble
+velocities[100] = (0.0, 0.0, 0.0); velocities[101] = (0.0, 0.0, 0.0)
+mark_chat = len(chat_out); mark_cl = len(client_log)
+for _ in range(10): tick()
+M.onHorn(100)                                                 # vehicle Lua reports the horn; car is on the line
+check(any("honked on the line" in l for l in client_log[mark_cl:]), "a honk inside the start bubble asks for a countdown")
+M.onHorn(101)                                                 # second honk during the countdown: ignored
+check(any(pid == -1 and "race start in 5" in m for pid, m in chat_out[mark_chat:]), "server announces the countdown to everyone")
+for _ in range(110): tick()                                   # 5.5 s: 4,3,2,1, GO
+check(any(pid == -1 and m.endswith("GO!") for pid, m in chat_out[mark_chat:]), "GO announced to everyone")
+check(any("vid 100 GO start" in l for l in client_log[mark_cl:]) and any("vid 101 GO start" in l for l in client_log[mark_cl:]),
+      "both parked cars take the GO start")
+gos = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_go"]
+t_go = gos[-1]["t"]
+for _ in range(20): tick()                                    # sit 1 s after GO: must NOT re-arm
+check(sum(1 for pid, m in chat_out[mark_chat:] if pid == -1 and "race start in" in m) == 1, "no second countdown from cars still parked after GO")
+velocities[100] = (27.78, 0.0, 0.0); velocities[101] = (27.78, 0.0, 0.0)
+before = len(laps())
+drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 40 + [(0, 0, 0)])     # vid 100 lap
+t100 = clock_ms[0]
+drive(101, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 10 + [(0, 0, 0)])     # vid 101 lap, slower
+t101 = clock_ms[0]
+got = laps()[before:]
+check(len(got) == 2, "both cars finish a lap after the GO start")
+if len(got) == 2:
+    check(got[0]["vid"] == 100 and got[0]["lapMs"] == t100 - t_go, "vid 100 lap counted from the GO instant, not from its crossing")
+    check(got[1]["vid"] == 101 and got[1]["lapMs"] == t101 - t_go, "vid 101 lap counted from the same GO instant")
+# jump start: park, arm, drive off during the countdown
+for _ in range(200): tick()                                   # 10 s cooldown after GO
+chat("/lap reset"); positions[100] = (0, 0, 0); positions[101] = (300, 300, 0); velocities[100] = (0.0, 0.0, 0.0)
+for _ in range(10): tick(); M.onHorn(100)                      # honk: countdown starts
+mark_chat = len(chat_out)
+for _ in range(10): tick()
+velocities[100] = (10.0, 0.0, 0.0); positions[100] = (20, 0, 0)   # drives off the line mid-countdown
+for _ in range(5): tick()
+check(any(pid == -1 and "jumped the start" in m for pid, m in chat_out[mark_chat:]), "driving off during the countdown is announced as a jump start")
+for _ in range(120): tick()                                   # let that countdown finish
+
+# ------------------------------------------------------------------ scenario 8: vehicle-side file, in its own VM, reports the horn edge once
+check(any("loadModulesInDirectory('lua/vehicle/extensions/kkLap')" in c for _, c in ve_cmds), "GE side loads kkLapVE into the cars")
+V = luajit21.LuaRuntime(unpack_returned_tuples=True)         # same LuaJIT family as the game's vehicle VM
+ge_calls = []
+V.globals().electrics = V.table(values=V.table(horn=0))
+V.globals().obj = V.table(getID=lambda self: 100, queueGameEngineLua=lambda self, s: ge_calls.append(s))
+VE = V.execute((ROOT / "Resources/Client/kkLap/lua/vehicle/extensions/kkLap/kkLapVE.lua").read_text())
+VE.updateGFX(0.05); V.globals().electrics["values"]["horn"] = 1; VE.updateGFX(0.05); VE.updateGFX(0.05)
+V.globals().electrics["values"]["horn"] = 0; VE.updateGFX(0.05); V.globals().electrics["values"]["horn"] = True; VE.updateGFX(0.05)
+check(ge_calls == ["kkLap.onHorn(100)", "kkLap.onHorn(100)"], "horn held down reports once per press, number or boolean (%s)" % ge_calls)
 
 # ------------------------------------------------------------------ scenario 6: /lap markers off reaches every client
 mark = len(server_log)
