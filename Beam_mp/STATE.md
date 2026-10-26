@@ -21,9 +21,8 @@ Bugs the bench caught on its first run (26/10), both fixed:
   Rule: never put ':' in an event name. Data may contain colons, names may not.
 Darren has previously had a server plugin load and print to the console (chat 26/10),
 so the Resources/Server path and onInit are known to work on his setup.
-Live status 26/10: server side loads and sees the join. **Client zip never ran on the PC**
-(beamng.log has no KKLAP line from the mod). Suspect the upload in Resources/Client, see the
-live test log. Next move: Darren's file listing of Resources/Client after the v0.3.0 upload.
+Live status 26/10 23:18: **v0.3.0 runs on the real server and the real PC, wire proven both
+ways** ("[C0] cfg received" in kkLap.log). Next move: /lap mark twice, then a lap.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -93,15 +92,29 @@ live test log. Next move: Darren's file listing of Resources/Client after the v0
   the console "Loaded N Mods" line and the modlist should show "/kkLap_v0.3.0;".
   Then rejoin and grep beamng.log on the PC for KKLAP again.
 
+- 26/10 23:18 server time: **v0.3.0 WORKS BOTH WAYS.** kkLap.log: 23:18:10 v0.3.0 loaded on Linux;
+  23:18:45 "cfg sent to 0" then "[C0] cfg received: 0 checkpoints, debug=true". (Darren, screenshot)
+  That one [C0] line proves: zip reached the PC and ran, modScript ran, extension loaded,
+  server->client (kkLap_cfg) and client->server (kkLap_dbg) both deliver. Steps 1-3 DONE.
+  Two things the log did NOT show, both explained, neither blocking:
+  a) no "[C0] extension v0.3.0 loaded, asking server for config" line, and only ONE "cfg sent
+     to 0" (onPlayerJoin's). The client's first sends happen before the session is up, so
+     kkLap_getcfg and that dbg line are dropped. onPlayerJoin covers it. Fine as is.
+  b) no "alive, own vehicles" line. Design flaw, mine: in kkLap.lua onUpdate the 5 s alive
+     line sits BELOW "if n == 0 then return end", so with 0 checkpoints it never fires. Step 4
+     cannot pass before /lap mark. Fix in v0.3.1: move the alive block above the early return.
+     Not re-uploading for that alone; it rides with whatever the first lap test finds.
+  NEXT (one step): in game, at the start line, type /lap mark. Expect chat "[LAP] checkpoint 1
+  marked at x y z r=8.0" and config.json appearing beside main.lua.
+
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
-2b. OPEN. Upload kkLap_v0.3.0.zip and the v0.3.0 main.lua, DELETE the old kkLap.zip from the
-    server, restart, rejoin. Check beamng.log on the PC for
-    "KKLAP". A "modScript ran" line means the zip arrives and runs.
-3. Join in game. kkLap.log should get: [C<pid>] extension loaded, then cfg received.
-4. Wait 10 s. kkLap.log should get "alive, own vehicles: <id>". If missing, onUpdate
-   isn't wired: that's the first bug to fix.
+2b. DONE 23:18. v0.3.0 uploaded, old zip gone, client runs on the PC.
+3. DONE 23:18. kkLap.log got "[C0] cfg received: 0 checkpoints".
+4. MOVED after step 5: the alive line only fires once a checkpoint exists (flaw, see log).
+   After the first /lap mark, wait 10 s: "alive, own vehicles: <id>" must appear. If it
+   doesn't, onUpdate isn't wired: that's the first bug to fix.
 5. /lap mark at a start line, drive 50 m, /lap mark again, drive round, cross both.
    Expect "timing started", a split, then a LAP line.
 
