@@ -86,6 +86,7 @@ local function onUpdate(dt)
                 TriggerServerEvent('kkLap:cross', jsonEncode({ vid = vid, cp = s.nextCp, pos = { x = p.x, y = p.y, z = p.z } }))
                 dbg(string.format('vid %d entered cp %d', vid, s.nextCp))
                 s.nextCp = (s.nextCp % n) + 1
+                inside   = false   -- new target sphere: start outside it, or touching spheres get missed (bench, 26/10)
             end
             s.inside = inside
         end

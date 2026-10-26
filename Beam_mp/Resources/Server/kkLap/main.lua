@@ -177,7 +177,7 @@ function onChatMessage(pid, name, msg)
     elseif cmd == "undo" then
         table.remove(cfg.checkpoints); runs = {}; saveCfg(); sendCfg(-1); say(pid, "last checkpoint removed, " .. #cfg.checkpoints .. " left")
     elseif cmd == "reset" then
-        runs = {}; say(pid, "all timing reset")
+        runs = {}; sendCfg(-1); say(pid, "all timing reset")   -- sendCfg also clears every client's state
     elseif cmd == "debug" then
         cfg.debug = (args[3] == "on"); saveCfg(); sendCfg(-1); say(pid, "debug " .. tostring(cfg.debug))
     elseif cmd == "set" and args[3] and tonumber(args[4]) then

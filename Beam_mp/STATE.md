@@ -8,7 +8,15 @@ derby...) bolt onto the same server/client plumbing. Split-screen is NOT the foc
 keying everything by vehicle id makes it work anyway at no cost, so that stays.
 
 ## Where we are
-Skeleton written, syntax-checked, zipped. **Never run on a real server yet.**
+Skeleton written, syntax-checked, zipped, and **bench-tested end to end** (bench/bench.py:
+real server Lua on 5.4 + real client Lua on LuaJIT, BeamMP calls stubbed and wired together,
+fake car driven through the spheres). 14 checks pass; `--break` proves the bench can fail.
+**Never run on a real server yet.** The bench models the plumbing; it cannot see whether
+the game really calls onUpdate.
+
+Bugs the bench caught on its first run (26/10), both fixed:
+- client inside-flag leaked across checkpoints: touching spheres missed the second one.
+- /lap reset cleared the server but not the clients; now it pushes config, which resets both.
 Darren has previously had a server plugin load and print to the console (chat 26/10),
 so the Resources/Server path and onInit are known to work on his setup.
 Next move is the first live load on the Linux test server via Pterodactyl.
@@ -46,6 +54,9 @@ Next move is the first live load on the Linux test server via Pterodactyl.
   and nothing from single-player Lua.
 - One log tag [KKLAP] on both sides; server appends to kkLap.log so it can be read slowly.
 - Linux only. Windows dropped (Darren, 26/10).
+
+## Before any upload
+    python3 Beam_mp/tools/check_lua.py && python3 Beam_mp/bench/bench.py && python3 Beam_mp/tools/build_client_zip.py
 
 ## First live test, in order
 1. Pterodactyl: upload Resources/Server/kkLap/main.lua and Resources/Client/kkLap.zip

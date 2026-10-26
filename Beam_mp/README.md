@@ -17,6 +17,11 @@ server loads nothing and says nothing.
 ## Build the client zip
     python3 Beam_mp/tools/build_client_zip.py
 
+## Bench test before uploading (no server needed)
+    pip install lupa
+    python3 Beam_mp/bench/bench.py
+Runs the real server and client Lua against each other with fake BeamMP calls and a fake car.
+
 ## In game
     /lap mark          drop a checkpoint at your car. First one is start/finish.
     /lap list          show them
