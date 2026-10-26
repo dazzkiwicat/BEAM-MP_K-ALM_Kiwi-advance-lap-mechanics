@@ -193,6 +193,15 @@ check(pathlib.Path("Resources/Server/kkLap/times.json").exists(), "times.json wr
 mark = len(chat_out); chat("/lap times")
 check(any("1. Darren" in m for _, m in chat_out[mark:]), "/lap times lists the best lap")
 
+# ------------------------------------------------------------------ scenario 2b: marker colours follow the lap (pure function, no ffi needed)
+st = lambda **k: C.table(**k)
+check(M.cpStyle(1, None, 2) == "todo", "no state yet: plain markers")
+check(M.cpStyle(2, st(nextCp=2, started=True, flashCp=1, flashT=1.0), 2) == "next", "next checkpoint is highlighted")
+check(M.cpStyle(1, st(nextCp=2, started=True, flashCp=1, flashT=1.0), 2) == "flash", "checkpoint just crossed flashes")
+check(M.cpStyle(1, st(nextCp=2, started=True, flashCp=1, flashT=0.0), 2) == "done", "after the flash it is drawn as done")
+check(M.cpStyle(2, st(nextCp=1, started=True, flashCp=2, flashT=0.0), 2) == "done", "heading for the line, every other cp is done")
+check(M.cpStyle(2, st(nextCp=1, started=False, flashCp=None, flashT=0), 2) == "todo", "before the first crossing nothing is done")
+
 # ------------------------------------------------------------------ scenario 3: second vehicle on the same client times separately
 # vid 101 jumps sphere to sphere with NO frame outside in between. That is the case
 # the first bench run caught: the inside flag leaked across checkpoints.

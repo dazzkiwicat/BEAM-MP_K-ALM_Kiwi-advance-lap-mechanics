@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.5.0'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.5.1'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp = n, inside = bool }
@@ -46,6 +46,8 @@ do
             start  = color(0, 220, 0, 90),       -- start/finish: green
             cp     = color(255, 150, 0, 70),     -- other checkpoints: orange
             next   = color(0, 160, 255, 120),    -- the one YOUR car must hit next: blue, brighter
+            done   = color(120, 120, 120, 35),   -- already through it this lap: grey ghost
+            flash  = color(255, 255, 255, 200),  -- the 1.5 s after you go through one: white flash
             fg     = color(255, 255, 255, 254),  -- 254 not 255: BeamMP notes 255 breaks the bg alpha
             bg     = color(0, 0, 0, 160),
         }
@@ -121,7 +123,7 @@ local function onUpdate(dt)
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
         local veh = be:getObjectByID(vid)             -- BeamNG: id -> object
         if veh then
-            local s  = state[vid] or { nextCp = 1, inside = false }
+            local s  = state[vid] or { nextCp = 1, inside = false, started = false, flashCp = nil, flashT = 0 }
             state[vid] = s
             local cp = cfg.checkpoints[s.nextCp]
             local p  = veh:getPosition()
@@ -136,12 +138,28 @@ local function onUpdate(dt)
                 local kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6
                 TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = s.nextCp, kph = kph, pos = { x = p.x, y = p.y, z = p.z } }))
                 dbg(string.format('vid %d entered cp %d', vid, s.nextCp))
+                s.started = true                   -- from now on, passed checkpoints are drawn as done
+                s.flashCp = s.nextCp; s.flashT = 1.5   -- and this one flashes white for 1.5 s
                 s.nextCp = (s.nextCp % n) + 1
                 inside   = false   -- new target sphere: start outside it, or touching spheres get missed (bench, 26/10)
             end
             s.inside = inside
+            if s.flashT > 0 then s.flashT = s.flashT - dt end
         end
     end
+end
+
+-- How checkpoint i should look for a car in state s. Pure, so the bench can test it.
+--   'flash' just went through it,  'next' hit this one next,  'done' already through this lap,
+--   'todo' not yet this lap.  Start/finish counts as done once you have passed any other checkpoint.
+function M.cpStyle(i, s, n)
+    if not s then return 'todo' end
+    if s.flashCp == i and s.flashT > 0 then return 'flash' end
+    if i == s.nextCp then return 'next' end
+    if not s.started then return 'todo' end
+    if s.nextCp == 1 then return 'done' end          -- every other cp passed, heading for the line
+    if i < s.nextCp then return 'done' end
+    return 'todo'
 end
 
 -- ----------------------------------------------------- per-frame drawing
@@ -153,18 +171,19 @@ local function onPreRender(dt)
     local n = #cfg.checkpoints
     if n == 0 then return end
 
-    local nextCp                                  -- for the car in seat 0, so it can be highlighted
+    local s                                       -- state of the car in seat 0, drives the colours
     local pv = be:getPlayerVehicle(0)
-    if pv then
-        local s = state[pv:getID()]
-        nextCp = s and s.nextCp
-    end
+    if pv then s = state[pv:getID()] end
 
     for i, cp in ipairs(cfg.checkpoints) do
-        local c = (i == nextCp) and draw.next or ((i == 1) and draw.start or draw.cp)
+        local style = M.cpStyle(i, s, n)
+        local base  = (i == 1) and 'START / FINISH' or ('CP ' .. i)
+        local c, label
+        if style == 'flash' then c = draw.flash; label = base .. '  OK'
+        elseif style == 'next' then c = draw.next; label = '> ' .. base .. ' <'
+        elseif style == 'done' then c = draw.done; label = base .. '  done'
+        else c = (i == 1) and draw.start or draw.cp; label = base end
         draw.sphere(cp.x, cp.y, cp.z, cp.r, c, true)
-        local label = (i == 1) and 'START / FINISH' or ('CP ' .. i)
-        if i == nextCp then label = '> ' .. label .. ' <' end
         draw.text(cp.x, cp.y, cp.z + cp.r + 1.0, label, draw.fg, true, false, draw.bg, false, true)
     end
 end

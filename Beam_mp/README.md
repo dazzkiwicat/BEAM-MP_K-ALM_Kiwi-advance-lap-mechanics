@@ -60,6 +60,8 @@ times.json for the new track; laps.log is never deleted.
 ## What you see (v0.4.0)
 Every checkpoint is drawn as the exact sphere the timer uses, label floating above it:
 start/finish green, the rest orange, and the one YOUR car has to hit next in blue.
+v0.5.1: the one you just went through flashes white for 1.5 s with "OK" on the label, then
+goes grey with "done" until you cross the line again. Grey behind you, blue ahead.
 What you see is what triggers, so a wrong radius shows up before a wrong lap does.
 Drawn with the same two FFI calls BeamMP uses for its own name tags. If they are missing
 the markers vanish and the timer still runs; kkLap.log says "markers NOT available".

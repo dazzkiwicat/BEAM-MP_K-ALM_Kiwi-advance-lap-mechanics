@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-bench-passed 27 checks, NOT yet live. Next move: upload v0.5.0, drive a lap, screenshot chat.
+plus v0.5.1 (crossed markers flash then grey) bench-passed 32 checks, NOT yet live. Next move: upload v0.5.1.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -141,6 +141,14 @@ bench-passed 27 checks, NOT yet live. Next move: upload v0.5.0, drive a lap, scr
   MPVehicleGE.lua:2605 calls on a vehicle (cloned source). UNCHECKED on the live server.
   NEXT (one step): upload main.lua v0.5.0 + kkLap_v0.5.0.zip, delete the v0.4.0 zip, restart,
   drive a lap, screenshot the chat line and laps.log.
+
+- 26/10: Darren: make it obvious when you have been through a checkpoint. -> v0.5.1 (client
+  only, server just bumps its version text): crossed checkpoint flashes white 1.5 s, label
+  "OK", then grey ghost labelled "done" until the next lap starts; next stays blue. Colour
+  logic is a pure function M.cpStyle so the bench tests it without the game (32 checks).
+  v0.5.0 was never uploaded; go straight to v0.5.1.
+  NEXT (one step): upload main.lua v0.5.1 + kkLap_v0.5.1.zip, delete the old zip, restart,
+  drive a lap, screenshot: chat lap line, a white flash, a grey done marker.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
