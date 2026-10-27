@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 pushed (rules window, admin gate, music stops on level exit; plus v0.17/0.18 start-bubble and everyone-honks rules), NOT yet live. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE (rules window seen). Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -395,6 +395,13 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
     would say so.
   NEXT (one step): upload v0.19 (main.lua + zip, delete old zip), restart, join: the rules
   window should pop up. Then "/admin add <your in-game name>" to lock config to you.
+
+- 27/10: **v0.19 LIVE, rules window shows** (screenshot: title, RULES, COMMANDS, ADMIN,
+  Close button all drawn, so SetNextWindowSize / TextWrapped / Cond_FirstUseEver exist in
+  this build: UNCHECKED cleared). Darren: "looks good". With it live: v0.17 start-bubble
+  restart and v0.18 everyone-honks rule, both still UNCHECKED on the real server until he
+  runs them with two cars.
+  NEXT (one step): /admin add <in-game name>. Then two-car honk test when someone is on.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
