@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.9.0'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.09'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent }
