@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.10'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.11'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -203,6 +203,37 @@ local function onGo(data)
             dbg(string.format('vid %d GO start', vid))
         end
     end
+end
+
+-- music (v0.11). The server never plays anything: it tells every client, and each game plays
+-- the file from the mod zip (art/sound/kkLap/<name>.ogg). Same calls RLS and BeamJoy use:
+-- Engine.Audio.createSource(channel, path) -> id, then the source object plays/sets volume,
+-- Engine.Audio.deleteSource(id) stops it. playOnce is the fallback (no stop, no volume change).
+local music = { id = nil, src = nil }
+local function musicStop()
+    if music.id then pcall(function() Engine.Audio.deleteSource(music.id) end) end
+    music.id, music.src = nil, nil
+end
+local function onMusic(data)
+    local d = jsonDecode(data)
+    if not d then return end
+    musicStop()
+    if d.stop or not d.file then dbg('music stopped'); return end
+    local path = 'art/sound/kkLap/' .. tostring(d.file) .. '.ogg'
+    local vol  = tonumber(d.vol) or 0.5
+    local ok, err = pcall(function()
+        music.id  = Engine.Audio.createSource('AudioGui', path)
+        music.src = music.id and scenetree.findObjectById(music.id)
+        if not music.src then error('no source object for ' .. path) end
+        music.src:setVolume(vol)
+        music.src:play(-1)
+    end)
+    if not ok then
+        dbg('music createSource failed (' .. tostring(err) .. '), trying playOnce')
+        music.id = nil
+        ok, err = pcall(function() Engine.Audio.playOnce('AudioGui', path, { volume = vol }) end)
+    end
+    dbg(string.format('music %s %s vol %.2f', ok and 'playing' or ('FAILED: ' .. tostring(err)), path, vol))
 end
 
 -- server asked "where is your car" for /lap mark. Use the player's current vehicle.
@@ -496,6 +527,7 @@ local function onExtensionLoaded()
     AddEventHandler('kkLap_getpos', onGetPos)
     AddEventHandler('kkLap_count',  onCount)
     AddEventHandler('kkLap_go',     onGo)
+    AddEventHandler('kkLap_music',  onMusic)
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do loadVE(vid) end   -- cars that spawned before we loaded
     dbg('extension v' .. M.VERSION .. ' loaded, markers ' .. (draw.ok and 'available' or 'NOT available') .. ', asking server for config')
     TriggerServerEvent('kkLap_getcfg', '')   -- usually too early to arrive; onPlayerJoin on the server covers it (26/10)
@@ -505,7 +537,7 @@ M.onExtensionLoaded = onExtensionLoaded
 M.onUpdate          = onUpdate
 M.onPreRender       = onPreRender
 M.onVehicleSpawned  = onVehicleSpawned
-M.onExtensionUnloaded = removeLine
+M.onExtensionUnloaded = function() removeLine(); musicStop() end
 M.onClientEndMission  = removeLine     -- BeamNG: leaving the level; the line would be gone anyway
 M.myPid             = nil     -- our player id, stamped by the server on the config it sends us
 return M

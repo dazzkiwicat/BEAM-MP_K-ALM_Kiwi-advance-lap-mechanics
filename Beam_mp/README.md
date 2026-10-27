@@ -40,6 +40,8 @@ Runs the real server and client Lua against each other with fake BeamMP calls an
     /lap set countdown 5
     /lap line paint|draw  start/finish line: painted on the road, or flat drawn chequer (v0.8.0)
     /lap set lineWidth 10   metres across the road
+    /lap music <name> [0-1]  play art/sound/kkLap/<name>.ogg from the zip on every client (v0.11)
+    /lap music stop
     /lap times         best lap per player with sector times, resets and points, top 10
     /lap set minLaps 2        laps a driver needs before their best goes on the board (v0.10)
     /lap set pointsMinDrivers 3   drivers needed before points show
@@ -60,6 +62,14 @@ so one file tells the whole story. Game side, if ever needed: grep KKLAP beamng.
 Never put a colon in an event name. BeamMP splits `name:data` at the first colon on both
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
+
+## Music (v0.11)
+The server plays nothing; it tells every client, and each game plays the file out of the mod
+zip. Drop .ogg files in Resources/Client/kkLap/art/sound/kkLap/, rebuild the zip, upload.
+Every joiner downloads the zip, so keep tracks small (96 kbps ogg, ~2 MB for 3 minutes;
+ffmpeg line in that folder's README.txt). Calls are the ones RLS and BeamJoy (a BeamMP mod)
+use: Engine.Audio.createSource / deleteSource, with playOnce as the fallback. Only ship
+music you may distribute: the zip is distribution.
 
 ## Resets, the board and points (v0.10)
 A physics reset (Insert, car stays put) is allowed and counted: it shows on the lap line

@@ -355,6 +355,13 @@ cfg = json.load(open(cfgfile))
 check(cfg.get("finish") is None, "/lap finish same puts the finish back on the start line")
 chat("/lap reset")
 
+# ------------------------------------------------------------------ scenario 10: music is a broadcast, each client plays the zip file
+mark = len(client_log); chat("/lap music kiwi 0.3")
+check(any("art/sound/kkLap/kiwi.ogg vol 0.30" in l for l in client_log[mark:]), "/lap music reaches the client with the file and volume (no audio engine here, so it reports the failure)")
+check(any(pid == -1 and "music: kiwi" in m for pid, m in chat_out), "music start announced to everyone")
+mark = len(client_log); chat("/lap music stop")
+check(any("music stopped" in l for l in client_log[mark:]), "/lap music stop reaches the client")
+
 # ------------------------------------------------------------------ scenario 8: vehicle-side file, in its own VM, reports the horn edge once
 check(any("loadModulesInDirectory('lua/vehicle/extensions/kkLap')" in c for _, c in ve_cmds), "GE side loads kkLapVE into the cars")
 V = luajit21.LuaRuntime(unpack_returned_tuples=True)         # same LuaJIT family as the game's vehicle VM

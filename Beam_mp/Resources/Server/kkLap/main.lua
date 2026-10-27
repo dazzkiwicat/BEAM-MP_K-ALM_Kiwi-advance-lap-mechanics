@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.10"   -- same number as the client zip it was built with
+local VERSION  = "0.11"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -47,6 +47,7 @@ local defaultCfg = {
     lineWidth    = 10,       -- metres across the road
     minLaps      = 2,        -- laps a driver must complete before any lap of theirs counts for the board (v0.10)
     pointsMinDrivers = 3,    -- points only show once this many drivers are on the board
+    musicVolume  = 0.5,      -- /lap music <name> plays art/sound/kkLap/<name>.ogg from the zip on every client (v0.11)
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
     checkpoints  = {},
@@ -355,6 +356,7 @@ function onChatMessage(pid, name, msg)
         say(pid, "/lap start [radius]  - move the start line here, checkpoints kept")
         say(pid, "/lap finish [radius] | finish same  - separate finish line here (point-to-point), or back to a loop")
         say(pid, "/lap times  - best lap per player, with sectors")
+        say(pid, "/lap music <name> [0-1] | music stop  - play art/sound/kkLap/<name>.ogg for everyone")
         say(pid, "/lap line paint|draw | set lineWidth <m>  - the start/finish line look")
         say(pid, "/lap race [seconds]  - countdown for everyone sitting in the start bubble (or honk in the bubble)")
         say(pid, "/lap autostart on|off | set countdown <s>")
@@ -388,6 +390,12 @@ function onChatMessage(pid, name, msg)
         cfg.autoStart = (args[3] == "on"); saveCfg(); say(pid, "autostart " .. tostring(cfg.autoStart))
     elseif cmd == "line" and (args[3] == "paint" or args[3] == "draw") then
         cfg.lineStyle = args[3]; saveCfg(); sendCfg(-1); say(pid, "start line style " .. args[3])
+    elseif cmd == "music" and args[3] == "stop" then
+        MP.TriggerClientEventJson(-1, "kkLap_music", { stop = true }); say(-1, "music stopped by " .. name)
+    elseif cmd == "music" and args[3] then
+        local vol = tonumber(args[4]) or cfg.musicVolume
+        MP.TriggerClientEventJson(-1, "kkLap_music", { file = args[3], vol = vol })
+        say(-1, string.format("music: %s (%s, volume %.0f%%)", args[3], name, vol * 100)); log("I", "music " .. args[3] .. " by " .. name)
     elseif cmd == "times" then
         local list = sortedBoard()
         if #list == 0 then say(pid, string.format("no times on the board yet (a driver needs %d laps first)", cfg.minLaps)) end

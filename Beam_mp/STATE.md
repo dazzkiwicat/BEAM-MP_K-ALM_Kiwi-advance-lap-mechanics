@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.10 (resets counted, position resets invalidate, 2-lap minimum, points; plus everything since v0.7.1: /lap start, /lap finish, tarseal-only painted lines) bench-passed 72 checks, NOT yet live. Next move: upload v0.10. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.11 (music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: upload v0.11, or drop an .ogg in the sound folder first. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -281,6 +281,21 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   NEXT (one step): upload v0.10 (main.lua + zip, delete the old zip), restart, drive a lap
   with one Insert reset (expect "physics reset 1 (counted)"), then a lap with one R recover
   (expect "lap will not count: position reset").
+
+- 27/10: Darren: a soundtrack the server can play, pulled from YouTube? -> v0.11, bench 75:
+  /lap music <name> [vol] broadcasts kkLap_music; each client plays art/sound/kkLap/<name>.ogg
+  from the zip. Engine.Audio.playOnce('AudioGui', 'art/sound/x.ogg', {volume=}) is used by
+  BeamJoy (a BeamMP client mod), RLS career overhaul and a BeamMP RP plugin (GitHub code
+  search 27/10), so .ogg from a mod zip is proven in multiplayer. Stoppable version:
+  Engine.Audio.createSource(ch, path) -> id, source:play(-1), :setVolume, deleteSource(id)
+  (RLS musicPlayer.lua). UNCHECKED: scenetree.findObjectById(id) as the way from id to
+  the source object (RLS line not seen); pcall'd with playOnce fallback, so worst case is
+  no stop and no volume change. No track in the repo yet: Darren supplies an .ogg (ffmpeg
+  is on this box, I can convert an mp3 he commits). Copyright: the zip goes to every
+  joiner = distribution; YouTube Audio Library / CC tracks are the safe pick. His call.
+  NEXT (one step): Darren commits a small .ogg (or mp3 for me to convert) into
+  Resources/Client/kkLap/art/sound/kkLap/, I rebuild the zip; or upload v0.11 now and
+  test the rest.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
