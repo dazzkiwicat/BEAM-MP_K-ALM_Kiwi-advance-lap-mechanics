@@ -66,7 +66,11 @@ Never put a colon in an event name. BeamMP splits `name:data` at the first colon
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
 
-## Music (v0.11)
+## Music (v0.11, v0.14 loops)
+The track does NOT go in the kkLap zip or in git. It lives in its own client zip on the
+server, kkLap_music.zip, holding only art/sound/kkLap/<name>.ogg. BeamMP mounts every zip
+in Resources/Client, so the game finds the file from either. Code zip changes every
+version; the music zip is made once. Make it: zip a folder tree art/sound/kkLap/set.ogg.
 The server plays nothing; it tells every client, and each game plays the file out of the mod
 zip. Drop .ogg files in Resources/Client/kkLap/art/sound/kkLap/, rebuild the zip, upload.
 Every joiner downloads the zip, so keep tracks small (96 kbps ogg, ~2 MB for 3 minutes;

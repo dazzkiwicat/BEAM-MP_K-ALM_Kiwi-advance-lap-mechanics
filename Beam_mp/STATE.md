@@ -322,7 +322,13 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   seconds as a timed re-fire for the playOnce fallback. Waiting on an audio file from
   Darren: commit mp3/ogg into Resources/Client/kkLap/art/sound/kkLap/, I convert with
   ffmpeg (here: /usr/bin/ffmpeg) to 64-96 kbps ogg and rebuild the zip. Size warning given.
-  NEXT (one step): Darren commits the track file; or upload v0.14 and test the rest.
+  27/10: Darren: server mods already total 4 GB, size is no issue. Design settled: audio
+  never enters git (would bloat the repo for good) and never enters the code zip (which
+  changes every version). It goes in its own client zip, kkLap_music.zip, containing only
+  art/sound/kkLap/<name>.ogg; BeamMP mounts all zips, the game finds the file. .gitignore
+  added for audio in that folder. Darren gives me a download link to the set; I convert
+  with ffmpeg here and hand the music zip back with the file-send tool.
+  NEXT (one step): Darren sends a link to the audio.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
