@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, plus v0.7.1 chequered start band, NOT yet live. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.7.2 (ring removed) waits for the painted start line research before upload. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -209,6 +209,19 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   Same two draw calls, nothing new to trust. UNCHECKED how it reads at speed; screenshot.
   Also tells us: alpha IS honoured (grey at half alpha was "too faint"), so markerAlpha works.
   v0.7.0 never uploaded; go straight to v0.7.1.
+
+- 27/10: **v0.7.1 LIVE, "it all worked"** (big centre text, countdown beeps, running clock,
+  chequered ring). Steps 7 and 9 done. But the ring of 32 balls blocks the view of the road.
+  Darren: "flag that idea" (parked, not deleted: a ring of balls as a marker style).
+  -> v0.7.2: ring removed, start sphere stays green and never fades. NOT uploaded yet;
+  it will ship with the painted line below so he uploads once.
+  Darren's design: the start/finish trigger gets its own behaviour: a real painted /
+  textured race line on the road at the marked coordinates, across the road, and the mark
+  only accepted when the car is on tarseal. Needs three BeamNG-side facts I don't have
+  checked: ground material under the wheels (vehicle Lua), a flat draw shape or a runtime
+  DecalRoad/decal, and the line's heading (veh:getDirectionVector, used 26 times in BeamMP's
+  own client, so that one is safe). Research brief handed to an Opus agent 27/10:
+  scratchpad/research/BRIEF_startline.md -> RESULT_startline.md. Build waits on the result.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.7.1'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.7.2'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent }
@@ -310,16 +310,8 @@ local function onPreRender(dt)
         elseif style == 'done' and i ~= 1 then c = draw.done; label = base .. '  done'
         else c = (i == 1) and draw.start or draw.cp; label = base end   -- start/finish never fades (26/10)
         draw.sphere(cp.x, cp.y, cp.z, cp.r, c, true)
-        if i == 1 then
-            -- chequered band round the start/finish sphere: 32 small spheres, black and white
-            -- alternating, sitting just above the centre height so they read as a line on the road.
-            local n, br = 32, cp.r * 0.12
-            for k = 0, n - 1 do
-                local ang = k * (2 * math.pi / n)
-                draw.sphere(cp.x + cp.r * math.cos(ang), cp.y + cp.r * math.sin(ang), cp.z + 0.4, br,
-                            (k % 2 == 0) and draw.black or draw.white, true)
-            end
-        end
+        -- v0.7.1 ringed the start sphere with 32 black/white balls: blocked the view of the road
+        -- (Darren, 27/10). Removed. A flat painted line is the plan; see STATE.md.
         draw.text(cp.x, cp.y, cp.z + cp.r + 1.0, label, draw.fg, true, false, draw.bg, false, true)
     end
 end
