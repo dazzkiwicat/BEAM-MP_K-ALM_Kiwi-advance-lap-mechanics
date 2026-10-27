@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.19"   -- same number as the client zip it was built with
+local VERSION  = "0.20"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -140,9 +140,17 @@ local function sectorsText(list)
     for i, ms in ipairs(list) do out[i] = sec(ms) end
     return "[" .. table.concat(out, " | ") .. "]"
 end
+-- who a driver IS: the BeamMP account id when there is one ("id:123456"), else the name.
+-- Guest names (guest7144128) change every session; the id does not (v0.20).
+local function playerKey(pid)
+    local name = MP.GetPlayerName(pid) or ("p" .. pid)
+    local ok, ids = pcall(MP.GetPlayerIdentifiers, pid)
+    if ok and type(ids) == "table" and ids.beammp and ids.beammp ~= "" then return "id:" .. tostring(ids.beammp), name end
+    return name, name
+end
 local function sortedBoard()
     local list = {}
-    for name, e in pairs(board) do table.insert(list, { name = name, e = e }) end
+    for key, e in pairs(board) do table.insert(list, { name = e.name or key, e = e }) end
     table.sort(list, function(a, b) return a.e.bestMs < b.e.bestMs end)
     return list
 end
@@ -246,7 +254,13 @@ function onCross(pid, data)
     if not ok or type(d) ~= "table" then log("E", "bad cross payload from " .. pid .. ": " .. tostring(data)); return end
 
     local key = pid .. ":" .. tostring(d.vid)
-    local r   = runs[key] or { nextCp = 1, lapStart = nil, lastCp = nil, best = nil, laps = 0, sectors = {}, resets = 0, invalid = false }
+    local r   = runs[key]
+    if not r then
+        local bkey = playerKey(pid)
+        local e = board[bkey]
+        r = { nextCp = 1, lapStart = nil, lastCp = nil, best = nil, laps = 0, sectors = {}, resets = 0, invalid = false,
+              bestSectors = (e and e.bestSectors) and e.bestSectors or {} }    -- deltas start from the board's bests
+    end
     r.resets = (r.resets or 0) + (tonumber(d.resets) or 0)      -- physics resets since the last checkpoint, from the client
     runs[key] = r
     local t   = nowMs()
@@ -296,6 +310,11 @@ function onCross(pid, data)
         if r.lapStart then
             local lap = t - r.lapStart
             table.insert(r.sectors, t - r.lastCp)            -- last sector: previous cp -> finish line
+            do
+                local idx, sec = #r.sectors, t - r.lastCp
+                if not r.bestSectors[idx] or sec < r.bestSectors[idx] then r.bestSectors[idx] = sec end
+            end
+            local lapDelta = r.best and (lap - r.best) or nil   -- vs your best before this lap (v0.20)
             if lap < cfg.minLapMs then
                 dbg("lap rejected, too short: " .. lap)
             elseif r.invalid then
@@ -310,7 +329,7 @@ function onCross(pid, data)
                 local kph  = math.floor(tonumber(d.kph) or 0)
                 if lap == r.best then r.bestResets = r.resets end
                 MP.TriggerClientEventJson(-1, "kkLap_lap", { pid = pid, vid = d.vid, name = name, lapMs = lap, bestMs = r.best,
-                                                            laps = r.laps, sectors = r.sectors, kph = kph, resets = r.resets })
+                                                            laps = r.laps, sectors = r.sectors, kph = kph, resets = r.resets, deltaMs = lapDelta })
                 local line = string.format("%s  lap %d  %s  %s  best %s  @%d km/h  resets %d%s",
                                            name, r.laps, fmt(lap), sectorsText(r.sectors), fmt(r.best), kph, r.resets,
                                            r.raceNo and ("  race " .. r.raceNo) or "")
@@ -319,11 +338,13 @@ function onCross(pid, data)
                 if cfg.announceLaps then say(-1, line) end
                 -- the board: only once this driver has minLaps laps in this run; then ANY of their laps can be the record
                 if r.laps >= cfg.minLaps then
-                    local e = board[name]
+                    local bkey = playerKey(pid)
+                    local e = board[bkey]
                     if not e or r.best < e.bestMs then
-                        board[name] = { bestMs = r.best, sectors = r.sectors, laps = (e and e.laps or 0) + 1, kph = kph, resets = r.bestResets or 0 }
+                        board[bkey] = { name = name, bestMs = r.best, sectors = r.sectors, laps = (e and e.laps or 0) + 1, kph = kph,
+                                        resets = r.bestResets or 0, bestSectors = r.bestSectors }
                     else
-                        e.laps = e.laps + 1
+                        e.laps = e.laps + 1; e.name = name; e.bestSectors = r.bestSectors
                     end
                     saveBoard()
                 elseif r.laps == 1 then
@@ -348,7 +369,11 @@ function onCross(pid, data)
         table.insert(r.sectors, sector)
         r.lastCp = t
         local kph = math.floor(tonumber(d.kph) or 0)
-        MP.TriggerClientEventJson(pid, "kkLap_split", { vid = d.vid, cp = d.cp, splitMs = t - r.lapStart, sectorMs = sector, kph = kph })
+        local idx = #r.sectors
+        local bs  = r.bestSectors[idx]
+        local delta = bs and (sector - bs) or nil            -- vs your own best for this sector (v0.20)
+        if not bs or sector < bs then r.bestSectors[idx] = sector end
+        MP.TriggerClientEventJson(pid, "kkLap_split", { vid = d.vid, cp = d.cp, splitMs = t - r.lapStart, sectorMs = sector, kph = kph, deltaMs = delta })
         if cfg.announceSplits then
             local name = MP.GetPlayerName(pid) or ("p" .. pid)
             say(-1, string.format("%s  S%d %s s  split %s  @%d km/h", name, d.cp - 1, sec(sector), fmt(t - r.lapStart), kph))

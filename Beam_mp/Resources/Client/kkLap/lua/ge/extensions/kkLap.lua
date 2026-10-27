@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.19'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.20'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -112,7 +112,8 @@ local function onLap(data)
     toast(string.format('%s  lap %d  %s   last sector %s   best %s', d.name, d.laps, M.fmt(d.lapMs),
           last and string.format('%.1f', last / 1000) or '-', M.fmt(d.bestMs)), 6)
     if d.pid == M.myPid then
-        flash('LAP  ' .. M.fmt(d.lapMs), 4, true, beep('CountdownGo'))
+        local delta = d.deltaMs and string.format('   %+.1f', d.deltaMs / 1000) or '   first lap'
+        flash('LAP  ' .. M.fmt(d.lapMs) .. delta, 4, true, beep('CountdownGo'))
         lapClock.hold = 4; lapClock.holdMsg = 'LAP  ' .. M.fmt(d.lapMs); lapClock.t = 0; lapClock.shown = 0
         realtime(lapClock.holdMsg)            -- now, not next frame
     end
@@ -123,8 +124,9 @@ local function onSplit(data)
     if not d then return end
     -- sector = since the previous checkpoint, split = since the line, speed = entering this sphere
     local sector = string.format('%.1f', (d.sectorMs or 0) / 1000)
-    toast(string.format('S%d  %s s   split %s   %d km/h', d.cp - 1, sector, M.fmt(d.splitMs), d.kph or 0), 4)
-    flash(string.format('S%d   %s', d.cp - 1, sector), 2.5, true)
+    local delta  = d.deltaMs and string.format('   %+.1f', d.deltaMs / 1000) or ''    -- vs your best sector; "-0.3" = faster (v0.20)
+    toast(string.format('S%d  %s s%s   split %s   %d km/h', d.cp - 1, sector, delta, M.fmt(d.splitMs), d.kph or 0), 4)
+    flash(string.format('S%d   %s%s', d.cp - 1, sector, delta), 2.5, true)
 end
 
 local function onInfo(data)
@@ -294,6 +296,15 @@ function M.onSurface(vid, sealed, surface)
     sendPosReply(sealed == true, surface)
 end
 
+-- crossing the start line backwards (v0.20): the start stores the heading the car had at
+-- /start; a car entering the bubble while moving against it is going the wrong way.
+local function wrongWay(veh, cp)
+    if not cp.hx then return false end
+    local vx, vy = veh:getVelocityXYZ()
+    if vx*vx + vy*vy < 1 then return false end        -- parked or crawling: not judged
+    return (vx * cp.hx + vy * cp.hy) < 0
+end
+
 -- a lap that must not count: tell the server once, it does the announcing
 function M.invalidate(vid, reason)
     local s = state[vid]
@@ -444,7 +455,9 @@ local function onUpdate(dt)
             -- state you were in: the partial lap is dropped and timing starts fresh. Only when
             -- the start is NOT the thing you were heading for (that case is the normal crossing).
             local inStart = insideCp(veh, cfg.checkpoints[1])
-            if inStart and not s.inStart and s.nextCp ~= 1 then
+            if inStart and not s.inStart and s.nextCp ~= 1 and wrongWay(veh, cfg.checkpoints[1]) then
+                flash('WRONG WAY', 2, true); dbg(string.format('vid %d entered the start backwards, ignored', vid))
+            elseif inStart and not s.inStart and s.nextCp ~= 1 then
                 local vx, vy, vz = veh:getVelocityXYZ()
                 TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = 1, restart = true,
                     kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6, pos = { x = p.x, y = p.y, z = p.z } }))
@@ -460,7 +473,10 @@ local function onUpdate(dt)
             end
             s.inStart = inStart
 
-            if inside and not s.inside then
+            if inside and not s.inside and s.nextCp == 1 and wrongWay(veh, cp) then
+                flash('WRONG WAY', 2, true); dbg(string.format('vid %d crossed the start backwards, ignored', vid))
+                s.inside = true; inside = true                -- swallow this entry; next proper entry counts
+            elseif inside and not s.inside then
                 -- edge: just entered the sphere. Report once.
                 -- speed read straight off the car at the moment it enters the sphere.
                 -- BeamNG: getVelocityXYZ returns three numbers in m/s (same call BeamMP's MPVehicleGE uses).

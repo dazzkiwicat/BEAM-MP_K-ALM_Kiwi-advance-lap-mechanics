@@ -77,6 +77,7 @@ S.globals().MP = S.table(
     RegisterEvent=s_register, CreateTimer=s_timer, CreateEventTimer=s_create_event_timer, CancelEventTimer=s_cancel_event_timer, TriggerClientEventJson=s_trigger_client_json,
     SendChatMessage=s_send_chat, GetPlayerName=lambda pid: "Darren" if pid == 1 else "p%d" % pid,
     GetOSName=lambda: "Linux", GetPlayerCount=lambda: 1,
+    GetPlayerIdentifiers=lambda pid: S.table(beammp="42", ip="1.2.3.4") if pid == 1 else S.table(ip="5.6.7.8"),
 )
 S.globals().Util = S.table(
     JsonEncode=lambda t: json.dumps(lua_to_py(t)),
@@ -216,7 +217,7 @@ splits = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_split
 check(splits and splits[-1]["kph"] == 100 and splits[-1]["sectorMs"] > 0, "split event carries sector time and speed")
 check(any("S1" in t and "100 km/h" in t for t in toasts), "client showed the sector toast with speed")
 check(any(f.startswith("S1") for f in flashes), "sector time flashed big in the centre")
-check(any(f == "LAP  0:05.100" for f in flashes), "own lap time flashed big in the centre")
+check(any(f.startswith("LAP  0:05.100") for f in flashes), "own lap time flashed big in the centre")
 check("TIMING STARTED" in flashes, "timing started flashed")
 check(realtime[0] == "LAP  0:05.100", "running clock shows the finished lap for a few seconds")
 check(any(pid == -1 and "Darren  lap 1" in m for pid, m in chat_out), "lap announced to everyone in chat")
@@ -231,8 +232,13 @@ check(any("physics reset #1 counted" in l for l in client_log), "physics reset i
 drive(100, [(50, 0, 0)] * 30 + [(0, 0, 0)])
 lap2 = laps()[-1]
 check(lap2["laps"] == 2 and lap2["resets"] == 1, "lap 2 counts and carries resets=1")
+check(lap2.get("deltaMs") == lap2["lapMs"] - 5100, "lap 2 carries the delta to the previous best (+%d ms)" % (lap2["lapMs"] - 5100))
+splits = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_split"]
+check(splits[0].get("deltaMs") is None and splits[1].get("deltaMs") is not None, "first sector has no delta, the second time through it does")
+check(any("S1" in t and ("+" in t or "-" in t) and "split" in t for t in toasts[-30:]), "sector toast shows the +/- delta")
 mark = len(chat_out); chat("/lap times")
 check(any("1. Darren" in m and "resets 0" in m for _, m in chat_out[mark:]), "/lap times lists the best lap after 2 laps (lap 1, which had no resets)")
+check("id:42" in json.load(open("Resources/Server/kkLap/times.json")), "board is keyed by the BeamMP account id, not the (guest) name")
 check(pathlib.Path("Resources/Server/kkLap/times.json").exists(), "times.json written once the driver has 2 laps")
 check(any("points appear once 3 drivers" in m for _, m in chat_out[mark:]), "points wait for 3 drivers")
 check(S.globals().pointsFor(60000, 60000) == 100 and S.globals().pointsFor(66000, 60000) == 90 and S.globals().pointsFor(120000, 60000) == 50,
@@ -279,6 +285,15 @@ mark = len(chat_out); positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0
 check(any(pid == -1 and "race start in" in m for pid, m in chat_out[mark:]), "honk in the bubble arms a countdown whatever state the car was in")
 for _ in range(130): tick()
 velocities[100] = (27.78, 0.0, 0.0)
+
+# ------------------------------------------------------------------ scenario 2d: crossing the start backwards is ignored
+mark_c = len(client_log); mark_e = len(events_to_client)
+positions[100] = (50, 0, 0); tick()
+velocities[100] = (-27.78, 0.0, 0.0)                           # driving back along -x into the start (heading was +x)
+drive(100, [(0, 0, 0)])
+check(any("backwards, ignored" in l for l in client_log[mark_c:]), "entering the start against its heading says WRONG WAY and sends nothing")
+check(not any(n == "kkLap_info" and "timing started" in d for (p, n, d) in events_to_client[mark_e:]), "no timing started from a backwards crossing")
+velocities[100] = (27.78, 0.0, 0.0); positions[100] = (50, 0, 0); tick()
 
 # ------------------------------------------------------------------ scenario 3: second vehicle on the same client times separately
 # vid 101 jumps sphere to sphere with NO frame outside in between. That is the case

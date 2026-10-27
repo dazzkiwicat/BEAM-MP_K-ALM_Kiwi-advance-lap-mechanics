@@ -26,6 +26,19 @@ When uploading a new version, delete the old kkLap_v*.zip from the server, or pl
     python3 Beam_mp/bench/bench.py
 Runs the real server and client Lua against each other with fake BeamMP calls and a fake car.
 
+## Deltas, identity, wrong way (v0.20)
+Every sector flash shows the gap to your own best for that sector, "S3 10.2 -0.3" (minus is
+faster), and the lap flash shows the gap to your previous best. Bests persist on the board.
+The board is keyed by BeamMP account id, so a guest whose name changes every session keeps
+their record; the name shown is the latest one. Crossing the start line against the heading
+it was marked with flashes WRONG WAY and starts nothing.
+
+## Results into Discord (tools/discord_poster.py)
+The BeamMP server cannot call out, so this script runs elsewhere (a scheduled task from the
+cloud session, or any PC): it reads laps.log through the Pterodactyl API and posts the new
+lines to a Discord webhook. Needs PTERO_URL, PTERO_API_KEY, PTERO_SERVER_ID, DISCORD_WEBHOOK
+in the environment, never in chat or git. Dry run: --local <laps.log> --dry-run.
+
 ## Who may do what (v0.19)
 Players: /rules (the in-game window), /times, /help, /dj, and honking. Everything that
 changes the track or the settings is admin only. Admins are player names in config.json;

@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE (rules window seen). Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.20 pushed (deltas, id-keyed board, wrong way, Discord poster script), NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -402,6 +402,23 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   restart and v0.18 everyone-honks rule, both still UNCHECKED on the real server until he
   runs them with two cars.
   NEXT (one step): /admin add <in-game name>. Then two-car honk test when someone is on.
+
+- 27/10: Darren picked 1, 3, 4, 6 from my list. -> v0.20, bench 103:
+  1 sector deltas: server keeps bestSectors per run, seeded from the board, deltaMs on every
+    split and on the lap (vs previous best); client prints "%+.1f".
+  4 board keyed by "id:<beammp account id>" from MP.GetPlayerIdentifiers (key "beammp",
+    server source TNetwork.cpp:481 / TLuaEngine.cpp:1418), name kept for display; falls
+    back to the name when there is no id. Old name-keyed entries still sort.
+  6 wrong way: velocity dot the stored start heading < 0 while moving = WRONG WAY flash,
+    crossing swallowed (both the normal cp1 crossing and the mid-lap restart edge).
+  3 tools/discord_poster.py: reads laps.log via the Pterodactyl client API, posts unseen
+    lines to a Discord webhook, cursor file; dry-run proven on a sample log (prints the
+    batch, then "nothing new"). NOT yet run for real: needs PTERO_URL, PTERO_API_KEY,
+    PTERO_SERVER_ID, DISCORD_WEBHOOK as environment secrets, and the panel host + discord.com
+    allowed by the environment's network policy. Then a scheduled task (hourly is the floor)
+    or Darren runs it on his PC with those four variables set.
+  NEXT (one step): upload v0.20 (main.lua + zip, delete old zip), restart, drive two laps:
+  second lap's sector flashes should carry +/- numbers. Separately: set the four secrets.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
