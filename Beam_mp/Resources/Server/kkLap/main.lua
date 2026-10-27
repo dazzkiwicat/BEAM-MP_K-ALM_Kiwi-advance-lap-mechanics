@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.7.2"   -- same number as the client zip it was built with
+local VERSION  = "0.8.0"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -43,6 +43,8 @@ local defaultCfg = {
     markerAlpha  = 40,       -- marker transparency 0..255, /lap set markerAlpha 40 (v0.5.2)
     autoStart    = true,     -- a honk inside the start bubble starts a shared countdown (v0.6.0)
     countdown    = 5,        -- seconds
+    lineStyle    = "paint",  -- start/finish line: "paint" = real road decal, "draw" = flat chequer (v0.8.0)
+    lineWidth    = 10,       -- metres across the road
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
     checkpoints  = {},
@@ -258,9 +260,24 @@ end
 
 -- client answers "where is vehicle X" for /lap mark
 function onPosReply(pid, data)
+    do
+        local ok, d = pcall(Util.JsonDecode, data)
+        if ok and type(d) == "table" and #cfg.checkpoints == 0 then
+            -- first mark = start/finish: only on tarseal (Darren's rule, 27/10)
+            if not d.sealed then
+                say(pid, "start/finish must be on tarseal. Wheels are on: " .. tostring(d.surface))
+                log("I", "start mark refused, surface " .. tostring(d.surface))
+                return
+            end
+        end
+    end
     local ok, d = pcall(Util.JsonDecode, data)
     if not ok or not d.pos then log("E", "bad pos reply: " .. tostring(data)); return end
     local cp = { x = d.pos.x, y = d.pos.y, z = d.pos.z, r = d.r or cfg.defaultRadius }
+    if #cfg.checkpoints == 0 and type(d.heading) == "table" then
+        cp.hx, cp.hy = tonumber(d.heading.x) or 0, tonumber(d.heading.y) or 1   -- start line runs across this
+        cp.surface = d.surface
+    end
     table.insert(cfg.checkpoints, cp)
     saveCfg(); sendCfg(-1)
     say(pid, string.format("checkpoint %d marked at %.1f %.1f %.1f r=%.1f", #cfg.checkpoints, cp.x, cp.y, cp.z, cp.r))
@@ -277,6 +294,7 @@ function onChatMessage(pid, name, msg)
     if cmd == "help" then
         say(pid, "/lap mark [radius]  - checkpoint at your car (1st = start/finish)")
         say(pid, "/lap times  - best lap per player, with sectors")
+        say(pid, "/lap line paint|draw | set lineWidth <m>  - the start/finish line look")
         say(pid, "/lap race [seconds]  - countdown for everyone sitting in the start bubble (or honk in the bubble)")
         say(pid, "/lap autostart on|off | set countdown <s>")
         say(pid, "/lap list | clear | undo | reset | debug on|off | markers on|off | announce on|off")
@@ -300,6 +318,8 @@ function onChatMessage(pid, name, msg)
         startCountdown(name)
     elseif cmd == "autostart" then
         cfg.autoStart = (args[3] == "on"); saveCfg(); say(pid, "autostart " .. tostring(cfg.autoStart))
+    elseif cmd == "line" and (args[3] == "paint" or args[3] == "draw") then
+        cfg.lineStyle = args[3]; saveCfg(); sendCfg(-1); say(pid, "start line style " .. args[3])
     elseif cmd == "times" then
         local list = sortedBoard()
         if #list == 0 then say(pid, "no laps yet") end

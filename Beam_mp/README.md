@@ -35,6 +35,8 @@ Runs the real server and client Lua against each other with fake BeamMP calls an
     /lap race [sec]    countdown for everyone, GO starts every car in the start bubble (v0.6.0)
     /lap autostart on|off  a honk inside the start bubble starts that countdown (default on)
     /lap set countdown 5
+    /lap line paint|draw  start/finish line: painted on the road, or flat drawn chequer (v0.8.0)
+    /lap set lineWidth 10   metres across the road
     /lap times         best lap per player with sector times, top 10 (v0.5.0)
     /lap announce on|off  every sector to everyone in chat (default off; laps always announce)
     /lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
@@ -53,6 +55,19 @@ so one file tells the whole story. Game side, if ever needed: grep KKLAP beamng.
 Never put a colon in an event name. BeamMP splits `name:data` at the first colon on both
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
+
+## The start/finish line (v0.8.0)
+The first /lap mark is special. It is only accepted when every wheel touching the ground is on
+tarseal (ASPHALT, ASPHALT_WET, COBBLESTONE, RUMBLE_STRIP), read inside the car's own Lua the
+way the game's own sound code does; on grass you get "start/finish must be on tarseal.
+Wheels are on: FL=GRASS,...". It also records which way the car was pointing, and the line is
+laid ACROSS the road from that, lineWidth metres wide.
+Two looks: "paint" (default) creates a real road decal with the game's chequered start-line
+material. UNCHECKED on every map: if it shows as an orange warning texture the material is not
+on that map, type /lap line draw. "draw" is a flat black-and-white chequer, 2 cm high, drawn
+every frame with the same tools as the spheres. Neither changes grip or the AI map.
+Research for this (sources, confidence per call) is in STATE.md and the bench covers the
+surface read in the car's own VM.
 
 ## Big writing on screen (v0.7.0)
 Countdown, GO, every sector time and your own lap time flash BIG in the centre of the

@@ -14,11 +14,12 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.7.2'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.8.0'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent }
 local counting = false       -- a shared countdown is running (server says so)
+local buildLine, removeLine  -- defined further down, used by onCfg above them
 local lastDbg  = 0
 
 local function dbg(msg)
@@ -70,6 +71,7 @@ do
     local ok = pcall(function()
         draw.sphere = ffi.C.BNG_DBG_DRAW_Sphere
         draw.text   = ffi.C.BNG_DBG_DRAW_TextAdvanced
+        draw.prism  = ffi.C.BNG_DBG_DRAW_SquarePrism   -- (x1,y1,z1, x2,y2,z2, baseH,baseW, tipH,tipW, colour, useZ); 2 cm high = flat
         buildColours(cfg.markerAlpha)
     end)
     draw.ok = ok and draw.sphere ~= nil
@@ -83,6 +85,8 @@ local function onCfg(data)
     cfg = d
     if cfg.markers == nil then cfg.markers = true end   -- config.json from before v0.4.0
     lapClock.running = false; realtime('')              -- track changed or reset: clock off
+    if cfg.lineStyle == nil then cfg.lineStyle = 'paint' end
+    buildLine()
     if draw.ok then buildColours(cfg.markerAlpha) end   -- /lap set markerAlpha takes effect here
     state = {}                                    -- checkpoints changed, start fresh
     dbg(string.format('cfg received: %d checkpoints, debug=%s, markers=%s',
@@ -197,13 +201,35 @@ local function onGo(data)
 end
 
 -- server asked "where is your car" for /lap mark. Use the player's current vehicle.
+-- v0.8.0: the reply also carries the car's heading (so a start line can run across the road)
+-- and what the wheels are on. The surface lives in the car's own Lua, so we ask kkLapVE and
+-- answer the server when it calls back (kkLap.onSurface), or after 1 s without an answer.
+local pending = nil      -- { r, vid, t } while a /lap mark is waiting for the car's surface report
+
+local function sendPosReply(sealed, surface)
+    local req = pending; pending = nil
+    if not req then return end
+    local veh = be:getObjectByID(req.vid)
+    if not veh then dbg('getpos: vehicle gone'); return end
+    local p = veh:getPosition()
+    local h = vec3(veh:getDirectionVector())       -- BeamNG; BeamMP wraps it the same way
+    TriggerServerEvent('kkLap_posreply', jsonEncode({ r = req.r, pos = { x = p.x, y = p.y, z = p.z },
+        heading = { x = h.x, y = h.y }, sealed = sealed, surface = surface }))
+    dbg(string.format('pos sent %.1f %.1f %.1f heading %.2f %.2f surface %s sealed=%s', p.x, p.y, p.z, h.x, h.y, surface, tostring(sealed)))
+end
+
 local function onGetPos(data)
     local d   = jsonDecode(data) or {}
     local veh = be:getPlayerVehicle(0)             -- BeamNG: seat 0's vehicle
     if not veh then dbg('getpos: no player vehicle'); return end
-    local p = veh:getPosition()
-    TriggerServerEvent('kkLap_posreply', jsonEncode({ r = d.r, pos = { x = p.x, y = p.y, z = p.z } }))
-    dbg(string.format('pos sent %.1f %.1f %.1f', p.x, p.y, p.z))
+    pending = { r = d.r, vid = veh:getID(), t = 0 }
+    veh:queueLuaCommand('kkLapVE.reportSurface()')  -- BeamNG: run this in the car's Lua VM
+end
+
+-- called back from the car's Lua: kkLap.onSurface(id, sealed, "FL=ASPHALT,FR=ASPHALT,...")
+function M.onSurface(vid, sealed, surface)
+    if not pending or pending.vid ~= vid then return end
+    sendPosReply(sealed == true, surface)
 end
 
 -- ----------------------------------------------------- per-frame check
@@ -232,6 +258,11 @@ local function onUpdate(dt)
         elseif lapClock.shown > 0.1 then
             lapClock.shown = 0; realtime(M.fmt(math.floor(lapClock.t * 1000)))
         end
+    end
+
+    if pending then
+        pending.t = pending.t + dt
+        if pending.t > 1 then dbg('no surface report from the car in 1 s'); sendPosReply(false, 'UNKNOWN') end
     end
 
     local n = #cfg.checkpoints
@@ -288,6 +319,72 @@ function M.cpStyle(i, s, n)
     return 'todo'
 end
 
+-- ----------------------------------------------------- the start/finish line itself
+-- Two ways, cfg.lineStyle: "paint" = a real DecalRoad on the road with the game's chequered
+-- start-line material (checkered_line, seen in RLS West Coast level files; UNCHECKED on every
+-- level: if it shows as an orange warning texture, /lap line draw);  "draw" = flat chequer
+-- of 2 cm high boxes drawn every frame with the FFI square prism, same family as the spheres.
+-- Geometry from cp1: heading (hx,hy) recorded at /lap mark, line runs ACROSS the road.
+local line = { obj = nil, cells = {}, key = nil }
+local function lineGeometry(cp)
+    local fx, fy = cp.hx or 0, cp.hy or 1
+    local len = math.sqrt(fx*fx + fy*fy); if len < 1e-6 then fx, fy, len = 0, 1, 1 end
+    fx, fy = fx / len, fy / len                    -- forward, flat
+    local rx, ry = fy, -fx                         -- right = forward x up
+    local w = cfg.lineWidth or 10                  -- metres across the road
+    local z = cp.z
+    local ok, zs = pcall(function() return be:getSurfaceHeightBelow(vec3(cp.x, cp.y, cp.z + 2)) end)
+    if ok and type(zs) == 'number' and zs > -1e5 and math.abs(zs - cp.z) < 3 then z = zs end
+    return fx, fy, rx, ry, w, z
+end
+
+function removeLine()
+    if line.obj then pcall(function() line.obj:delete() end); line.obj = nil end
+    line.cells = {}; line.key = nil
+end
+
+function buildLine()
+    removeLine()
+    local cp = cfg.checkpoints[1]
+    if not cp or not cfg.markers then return end
+    local fx, fy, rx, ry, w, z = lineGeometry(cp)
+    line.key = string.format('%s:%.1f:%.1f:%.1f:%s', cfg.lineStyle, cp.x, cp.y, w, tostring(cp.hx))
+    if cfg.lineStyle == 'paint' then
+        -- stock GE pattern (util/procTrack.lua, editor/roadSpline/layerMgr.lua, 0.40 dump):
+        -- createObject -> setField... -> registerObject -> insertNodeNoRegen x2 -> regenerate
+        local ok, err = pcall(function()
+            local r = createObject('DecalRoad')
+            r:setField('material',       0, cfg.lineMaterial or 'checkered_line')
+            r:setField('improvedSpline', 0, 'true')
+            r:setField('overObjects',    0, 'true')      -- paints onto mesh roads too
+            r:setField('textureLength',  0, '2')
+            r:setField('renderPriority', 0, '1')         -- low = on top of the level's own roads
+            r:setField('drivability',    0, '-1')        -- keep it out of the AI / minimap road graph
+            r:setField('startEndFade',   0, '0 0')
+            r:registerObject('kkLap_startline_' .. tostring(os.clock()):gsub('%.', '_'))
+            r:insertNodeNoRegen(vec3(cp.x - rx * w/2, cp.y - ry * w/2, z), 1.0, 0)
+            r:insertNodeNoRegen(vec3(cp.x + rx * w/2, cp.y + ry * w/2, z), 1.0, 1)
+            r:regenerate()
+            line.obj = r
+        end)
+        if ok then dbg('start line painted (DecalRoad)'); return end
+        dbg('paint failed, falling back to draw: ' .. tostring(err))
+    end
+    -- flat chequer: 2 rows x 10 cells, 1 m deep in total, drawn every frame from onPreRender
+    local nA, nR, depth = 10, 2, 1.0
+    local cw, rh = w / nA, depth / nR
+    for r = 0, nR - 1 do
+        for i = 0, nA - 1 do
+            local ax = -w/2 + (i + 0.5) * cw          -- across
+            local f0 = -depth/2 + r * rh              -- along
+            local px, py = cp.x + rx * ax + fx * f0, cp.y + ry * ax + fy * f0
+            local qx, qy = px + fx * rh, py + fy * rh
+            table.insert(line.cells, { px, py, z + 0.03, qx, qy, z + 0.03, cw, ((i + r) % 2 == 0) })
+        end
+    end
+    dbg('start line drawn as ' .. #line.cells .. ' flat cells')
+end
+
 -- ----------------------------------------------------- per-frame drawing
 -- BeamMP draws its name tags from onPreRender, not onUpdate, so that is where ours go too.
 -- Each checkpoint is drawn as the exact sphere the timer uses, so what you see is what
@@ -300,6 +397,13 @@ local function onPreRender(dt)
     local s                                       -- state of the car in seat 0, drives the colours
     local pv = be:getPlayerVehicle(0)
     if pv then s = state[pv:getID()] end
+
+    if draw.prism and #line.cells > 0 then
+        for k = 1, #line.cells do
+            local c = line.cells[k]
+            draw.prism(c[1], c[2], c[3], c[4], c[5], c[6], 0.02, c[7], 0.02, c[7], c[8] and draw.white or draw.black, true)
+        end
+    end
 
     for i, cp in ipairs(cfg.checkpoints) do
         local style = M.cpStyle(i, s, n)
@@ -338,5 +442,7 @@ M.onExtensionLoaded = onExtensionLoaded
 M.onUpdate          = onUpdate
 M.onPreRender       = onPreRender
 M.onVehicleSpawned  = onVehicleSpawned
+M.onExtensionUnloaded = removeLine
+M.onClientEndMission  = removeLine     -- BeamNG: leaving the level; the line would be gone anyway
 M.myPid             = nil     -- our player id, stamped by the server on the config it sends us
 return M

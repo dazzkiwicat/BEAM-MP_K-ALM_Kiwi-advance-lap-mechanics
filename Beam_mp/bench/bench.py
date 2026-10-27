@@ -108,6 +108,7 @@ class Veh:
     def getPosition(self):
         x, y, z = positions[self.vid]; return C.table(x=x, y=y, z=z)
     def getID(self): return self.vid
+    def getDirectionVector(self): return C.table(x=1.0, y=0.0, z=0.0)   # car points along +x
     def queueLuaCommand(self, cmd): ve_cmds.append((self.vid, cmd))
     def getVelocityXYZ(self):
         return velocities.get(self.vid, (0.0, 0.0, 0.0))    # m/s, three values like the game
@@ -127,6 +128,7 @@ C.globals().guihooks = C.table(trigger=ui)
 flashes  = []
 realtime = [""]
 C.globals().log = lambda lvl, origin, msg: client_log.append("[%s] %s" % (lvl, msg))
+C.globals().vec3 = lambda t: t                  # vec3(x) wrapper: the stub tables already have x,y,z
 C.globals().jsonEncode = lambda t: json.dumps(lua_to_py(t))
 C.globals().jsonDecode = lambda s: py_to_lua(C, json.loads(s))
 
@@ -172,14 +174,21 @@ check(any("alive, own vehicles: 100,101" in l for l in client_log), "alive line 
 # ------------------------------------------------------------------ scenario 1: mark a track from the car
 own_vids[:] = [100, 101]; seat0_vid[0] = 100
 positions[100] = (0, 0, 0);   positions[101] = (500, 500, 0)
-chat("/lap mark")                                # cp1 at car (0,0,0)
-positions[100] = (100, 0, 0); chat("/lap mark 10")   # cp2 at (100,0,0) r=10
+chat("/lap mark")                                # cp1 at car (0,0,0): server asks, GE asks the car's Lua
+check(any("kkLapVE.reportSurface()" in c for v, c in ve_cmds if v == 100), "/lap mark asks the car's Lua what the wheels are on")
+mark_chat = len(chat_out)
+M.onSurface(100, False, "FL=GRASS,FR=GRASS,RL=GRASS,RR=GRASS")      # the car answers: grass
+check(any("must be on tarseal" in m and "GRASS" in m for _, m in chat_out[mark_chat:]), "start/finish on grass is refused and says what the wheels are on")
+chat("/lap mark"); M.onSurface(100, True, "FL=ASPHALT,FR=ASPHALT,RL=ASPHALT,RR=ASPHALT")   # tarseal: accepted
+positions[100] = (100, 0, 0); chat("/lap mark 10"); M.onSurface(100, False, "FL=GRASS")   # cp2 on grass is fine, only the start is fussy
 cfgfile = pathlib.Path("Resources/Server/kkLap/config.json")
 check(cfgfile.exists(), "/lap mark round trip wrote config.json")
 cfg = json.load(open(cfgfile)) if cfgfile.exists() else {"checkpoints": [], "defaultRadius": None}
 if not cfg["checkpoints"]: cfg["checkpoints"] = [{"r": None}, {"r": None}]
 check(len(cfg["checkpoints"]) == 2, "two checkpoints saved to config.json")
 check(cfg["checkpoints"][1]["r"] == 10, "/lap mark 10 sets radius 10")
+check(cfg["checkpoints"][0].get("hx") == 1.0 and cfg["checkpoints"][0].get("surface", "").startswith("FL=ASPHALT"), "start checkpoint stores the car's heading and surface")
+check(any("start line drawn as 20 flat cells" in l or "start line painted" in l for l in client_log), "client builds the start line from the config (paint, or 20 flat cells without a game)")
 check(cfg["checkpoints"][0]["r"] == cfg["defaultRadius"], "/lap mark uses defaultRadius")
 check(any("checkpoint 2 marked" in m for _, m in chat_out), "chat confirms the mark")
 
@@ -250,7 +259,8 @@ check((work / "Resources/Server/kkLap/kkLap.log").exists(), "kkLap.log file is w
 check(not dropped, "no client event was dropped by the server for an unknown name (first: %s)" % (dropped[:1] or "-"))
 
 # ------------------------------------------------------------------ scenario 7: two cars sit on the line -> countdown -> GO -> both laps count from GO
-positions[100] = (0, 0, 0); chat("/lap mark"); positions[100] = (100, 0, 0); chat("/lap mark 10")   # track again after /lap clear
+positions[100] = (0, 0, 0); chat("/lap mark"); M.onSurface(100, True, "FL=ASPHALT")
+positions[100] = (100, 0, 0); chat("/lap mark 10"); M.onSurface(100, True, "FL=ASPHALT")   # track again after /lap clear
 chat("/lap reset")
 positions[100] = (0, 0, 0); positions[101] = (2, 0, 0)        # both parked in the start bubble
 velocities[100] = (0.0, 0.0, 0.0); velocities[101] = (0.0, 0.0, 0.0)
@@ -301,6 +311,18 @@ VE = V.execute((ROOT / "Resources/Client/kkLap/lua/vehicle/extensions/kkLap/kkLa
 VE.updateGFX(0.05); V.globals().electrics["values"]["horn"] = 1; VE.updateGFX(0.05); VE.updateGFX(0.05)
 V.globals().electrics["values"]["horn"] = 0; VE.updateGFX(0.05); V.globals().electrics["values"]["horn"] = True; VE.updateGFX(0.05)
 check(ge_calls == ["kkLap.onHorn(100)", "kkLap.onHorn(100)"], "horn held down reports once per press, number or boolean (%s)" % ge_calls)
+# surface report: two wheels on asphalt (10) with rubber (4) in either slot, one on grass (20), one in the air (-1)
+mats = V.table_from({10: V.table(name="ASPHALT"), 20: V.table(name="GRASS"), 4: V.table(name="RUBBER")})
+V.globals().particles = V.table(getMaterialsParticlesTable=lambda: mats, getMaterialByID=lambda m, i: m[i])
+V.globals().wheels = V.table(wheels=V.table_from({0: V.table(name="FL", contactMaterialID1=10, contactMaterialID2=4),
+                                                  1: V.table(name="FR", contactMaterialID1=4,  contactMaterialID2=10),
+                                                  2: V.table(name="RL", contactMaterialID1=20, contactMaterialID2=4),
+                                                  3: V.table(name="RR", contactMaterialID1=-1, contactMaterialID2=-1)}))
+ge_calls.clear(); VE.reportSurface()
+check(ge_calls == ['kkLap.onSurface(100, false, "FL=ASPHALT,FR=ASPHALT,RL=GRASS,RR=NONE")'], "surface report names every wheel and says not sealed with one wheel on grass (%s)" % ge_calls)
+V.globals().wheels["wheels"][2]["contactMaterialID1"] = 10
+ge_calls.clear(); VE.reportSurface()
+check(ge_calls == ['kkLap.onSurface(100, true, "FL=ASPHALT,FR=ASPHALT,RL=ASPHALT,RR=NONE")'], "all touching wheels on asphalt = sealed, airborne wheel ignored")
 
 # ------------------------------------------------------------------ scenario 6: /lap markers off reaches every client
 mark = len(server_log)

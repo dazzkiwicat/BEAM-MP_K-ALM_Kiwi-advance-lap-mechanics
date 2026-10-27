@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.7.2 (ring removed) waits for the painted start line research before upload. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.8.0 (tarseal-only start, painted line across the road, ring removed) bench-passed 54 checks, NOT yet live. Next move: upload v0.8.0, re-mark the start on tarseal. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -222,6 +222,27 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   DecalRoad/decal, and the line's heading (veh:getDirectionVector, used 26 times in BeamMP's
   own client, so that one is safe). Research brief handed to an Opus agent 27/10:
   scratchpad/research/BRIEF_startline.md -> RESULT_startline.md. Build waits on the result.
+  Research came back 27/10 (Opus agent, 57 tool calls). Sources: stock game Lua dump on GitHub
+  (wlkmanist/BeamNG_lua, newer than 0.36), rally-academy mod notes with per-row in-game checks
+  on 0.39.4/0.40.0, BeamMP client source. Verified: wheels.wheels[i].contactMaterialID1/2 with
+  4=RUBBER swapped out and particles.getMaterialByID for the name (HIGH); FFI
+  BNG_DBG_DRAW_SquarePrism(x1,y1,z1,x2,y2,z2,baseH,baseW,tipH,tipW,col,useZ), 2 cm high lies
+  flat (HIGH); runtime DecalRoad via createObject/setField/registerObject/insertNodeNoRegen/
+  regenerate, delete with :delete() (MEDIUM-HIGH); material "checkered_line" seen in RLS West
+  Coast level files, UNCHECKED on other maps. GE-side terrain lookup does not see roads, so the
+  tarseal check must come from the car. TSStatic made live drew nothing on 0.40 (not used).
+  -> v0.8.0, bench 54 checks: /lap mark asks the car's Lua (kkLapVE.reportSurface) and the
+  car answers kkLap.onSurface(id, sealed, "FL=ASPHALT,..."); first mark refused unless every
+  touching wheel is sealed; heading stored as hx,hy on cp1; line across the road, lineWidth m;
+  lineStyle paint (DecalRoad, checkered_line) with automatic fallback to draw if createObject
+  throws, and /lap line draw by hand if the material shows orange. 1 s timeout if the car
+  never answers ("UNKNOWN", refused). Ring of balls stays parked.
+  UNCHECKED live: checkered_line on his map; DecalRoad z on mesh roads (overObjects=true);
+  getSurfaceHeightBelow miss value (guarded); hx/hy sign (line could come out along the road
+  instead of across: if so, swap rx,ry in lineGeometry).
+  NEXT (one step): upload v0.8.0 (main.lua + zip, delete old zip), restart, /lap clear, park
+  on the tarseal start, /lap mark. Expect the chat line to accept and a chequered line across
+  the road. Then try /lap mark on grass: expect the refusal with the wheel list.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
