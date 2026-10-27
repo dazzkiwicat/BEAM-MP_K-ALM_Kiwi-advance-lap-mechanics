@@ -27,6 +27,8 @@ When uploading a new version, delete the old kkLap_v*.zip from the server, or pl
 Runs the real server and client Lua against each other with fake BeamMP calls and a fake car.
 
 ## In game
+Every command works with or without the lap word: /mark is /lap mark, /times is /lap times (v0.12).
+Other plugins' slash commands are left alone.
     /lap mark          drop a checkpoint at your car. First one is start/finish.
     /lap start [r]     move the start line to your car. Every other checkpoint is kept. (v0.09)
     /lap finish [r]    a separate finish line at your car: point-to-point course (hill climb, drag).

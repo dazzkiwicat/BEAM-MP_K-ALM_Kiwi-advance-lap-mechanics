@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.11 (music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: upload v0.11, or drop an .ogg in the sound folder first. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.12 (commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: upload v0.12. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -296,6 +296,12 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   NEXT (one step): Darren commits a small .ogg (or mp3 for me to convert) into
   Resources/Client/kkLap/art/sound/kkLap/, I rebuild the zip; or upload v0.11 now and
   test the rest.
+
+- 27/10: Darren: drop the need for "/lap" in chat. -> v0.12, bench 78: "/mark 10" = "/lap mark 10"
+  for every command word we own (SHORT table in main.lua); any other "/word" is passed
+  through untouched for other plugins; "/lap ..." still works. Server-only change, client
+  version bumped to keep the numbers in step.
+  NEXT (one step): upload v0.12 (main.lua + zip, delete old zip), restart, type /help.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

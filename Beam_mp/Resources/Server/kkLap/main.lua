@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.11"   -- same number as the client zip it was built with
+local VERSION  = "0.12"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -345,13 +345,27 @@ end
 
 -- ---------------------------------------------------------------- chat commands
 -- Return 1 swallows the message so it doesn't show in chat.
+-- the words that work on their own, "/mark" = "/lap mark"
+SHORT = { help = true, mark = true, start = true, finish = true, list = true, clear = true, undo = true,
+          reset = true, debug = true, markers = true, announce = true, autostart = true, race = true,
+          times = true, line = true, music = true, set = true, lap = true }
+
 function onChatMessage(pid, name, msg)
-    if msg:sub(1, 4) ~= "/lap" then return end
+    -- v0.12: "/mark" works as well as "/lap mark". Any other "/word" is left alone for
+    -- other plugins. Unknown words after "/lap" still get the help text.
+    if msg:sub(1, 1) ~= "/" then return end
     local args = {}
     for w in msg:gmatch("%S+") do table.insert(args, w) end
+    if args[1] ~= "/lap" then
+        local short = args[1]:sub(2):lower()
+        if not SHORT[short] then return end           -- not ours
+        table.insert(args, 1, "/lap")                 -- "/mark 10" -> "/lap mark 10"
+        args[2] = short
+    end
     local cmd = args[2] or "help"
 
     if cmd == "help" then
+        say(pid, "every command works without the lap word too: /mark, /start, /times, /race ...")
         say(pid, "/lap mark [radius]  - checkpoint at your car (1st = start/finish)")
         say(pid, "/lap start [radius]  - move the start line here, checkpoints kept")
         say(pid, "/lap finish [radius] | finish same  - separate finish line here (point-to-point), or back to a loop")

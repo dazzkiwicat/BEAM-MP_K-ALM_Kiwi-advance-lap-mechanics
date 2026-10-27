@@ -362,6 +362,16 @@ check(any(pid == -1 and "music: kiwi" in m for pid, m in chat_out), "music start
 mark = len(client_log); chat("/lap music stop")
 check(any("music stopped" in l for l in client_log[mark:]), "/lap music stop reaches the client")
 
+# ------------------------------------------------------------------ scenario 11: commands without the lap word
+mark = len(chat_out)
+check(chat("/times") == 1 and len(chat_out) > mark, "/times works like /lap times (answers, and swallows the message)")
+check(chat("/foo bar") is None and chat("hello /lap") is None, "other slash commands and plain chat are left alone")
+mark = len(chat_out); chat("/help")
+check(any("without the lap word" in m for _, m in chat_out[mark:]), "/help is ours")
+mark = len(chat_out); chat("/set minLapMs 4000")
+check(any("minLapMs = 4000" in m for _, m in chat_out[mark:]), "/set carries its arguments through")
+chat("/set minLapMs 5000")
+
 # ------------------------------------------------------------------ scenario 8: vehicle-side file, in its own VM, reports the horn edge once
 check(any("loadModulesInDirectory('lua/vehicle/extensions/kkLap')" in c for _, c in ve_cmds), "GE side loads kkLapVE into the cars")
 V = luajit21.LuaRuntime(unpack_returned_tuples=True)         # same LuaJIT family as the game's vehicle VM
