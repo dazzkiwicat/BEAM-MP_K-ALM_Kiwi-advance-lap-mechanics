@@ -345,7 +345,11 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   stoppable source clamps at 1). Real fix is in the file: Audacity Amplify/Normalize, or
   ffmpeg -af loudnorm. Also worth checking: the game's Options > Audio sliders, AudioGui
   is the interface channel.
-  NEXT (one step): upload v0.16 (main.lua + zip, delete old zip), restart, /music set.mp3 3.
+  27/10: solved, nothing to do with the file: Darren's "Other" slider in Options > Audio
+  was turned down. So AudioGui = the "Other" slider (checked live). Written into README.
+  The v0.16 boost stays, harmless.
+  NEXT (one step): upload v0.16 whenever convenient (nothing urgent in it); then report on
+  the painted start line and a recover mid-lap, the two biggest UNCHECKED items.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
