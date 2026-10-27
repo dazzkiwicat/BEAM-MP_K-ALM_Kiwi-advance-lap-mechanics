@@ -328,7 +328,13 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   art/sound/kkLap/<name>.ogg; BeamMP mounts all zips, the game finds the file. .gitignore
   added for audio in that folder. Darren gives me a download link to the set; I convert
   with ffmpeg here and hand the music zip back with the file-send tool.
-  NEXT (one step): Darren sends a link to the audio.
+  27/10: Darren has the set: 1.5 h mp3, ~112 MB. No conversion needed: the same play call
+  takes mp3 (RLS musicPlayer globs *.mp3). v0.15: /music accepts a name with extension.
+  He builds kkLap_music.zip on his PC (folder art\sound\kkLap\set.mp3, send to compressed
+  folder, rename) and uploads it to Resources/Client beside the kkLap zip.
+  NEXT (one step): upload kkLap_music.zip + main.lua v0.15 + kkLap_v0.15.zip, delete the old
+  kkLap zip, restart, /music set.mp3 0.4. Expect "music: set.mp3 (Darren, volume 40%, on
+  repeat)" in chat and sound on every PC; kkLap.log "[C0] music playing art/sound/kkLap/set.mp3".
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.14'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.15'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -240,7 +240,11 @@ local function onMusic(data)
     if not d then return end
     musicStop()
     if d.stop or not d.file then dbg('music stopped'); return end
-    local path = 'art/sound/kkLap/' .. tostring(d.file) .. '.ogg'
+    -- mp3 plays too (RLS's player globs mp3/ogg/wav/flac through the same call): give the
+    -- name with its extension, or without for .ogg
+    local file = tostring(d.file)
+    if not file:find('%.%w+$') then file = file .. '.ogg' end
+    local path = 'art/sound/kkLap/' .. file
     local vol  = tonumber(d.vol) or 0.5
     music.path, music.vol, music.loop, music.every, music.t = path, vol, d.loop ~= false, tonumber(d.seconds), 0
     local ok, err = pcall(function()
