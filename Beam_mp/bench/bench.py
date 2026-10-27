@@ -361,6 +361,8 @@ check(any("art/sound/kkLap/kiwi.ogg vol 0.30" in l for l in client_log[mark:]), 
 check(any(pid == -1 and "music: kiwi" in m and "on repeat" in m for pid, m in chat_out), "music start announced to everyone, on repeat by default")
 mark = len(client_log); chat("/music set.mp3 0.3")
 check(any("art/sound/kkLap/set.mp3 vol 0.30" in l for l in client_log[mark:]), "a name with its own extension is used as given (mp3)")
+mark = len(client_log); chat("/music set.mp3 3")
+check(any("vol 3.00" in l for l in client_log[mark:]), "volume above 1 passes through as a boost")
 mark = len(client_log); chat("/music kiwi 0.3 3")            # no audio engine here: timed loop re-fires every 3 s
 for _ in range(70): tick()
 check(sum(1 for l in client_log[mark:] if "music looped (timed)" in l) == 1, "timed loop re-fires after the given seconds")

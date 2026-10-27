@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.15'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.16'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -251,7 +251,7 @@ local function onMusic(data)
         music.id  = Engine.Audio.createSource('AudioGui', path)
         music.src = music.id and scenetree.findObjectById(music.id)
         if not music.src then error('no source object for ' .. path) end
-        music.src:setVolume(vol)
+        music.src:setVolume(vol)                   -- UNCHECKED whether the source clamps at 1; playOnce path takes 2+ (RLS)
         music.src:play(-1)
     end)
     if not ok then

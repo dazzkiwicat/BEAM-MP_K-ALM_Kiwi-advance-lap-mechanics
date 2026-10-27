@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.15"   -- same number as the client zip it was built with
+local VERSION  = "0.16"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -415,7 +415,9 @@ function onChatMessage(pid, name, msg)
     elseif cmd == "music" and args[3] then
         -- /music <name> [volume 0-1] [once | <seconds>]   loops by default (DJ set); "once" plays through;
         -- a number of seconds is the fallback loop clock for games that give us no stoppable source
-        local vol  = tonumber(args[4]) or cfg.musicVolume
+        -- volume: 0-1 is normal, above 1 is a boost (RLS passes volume=2 to the same call).
+        -- Capped at 10 so a typo does not deafen the server. YouTube rips are quiet (Darren, 27/10).
+        local vol  = math.min(10, math.max(0, tonumber(args[4]) or cfg.musicVolume))
         local loop = args[5] ~= "once"
         MP.TriggerClientEventJson(-1, "kkLap_music", { file = args[3], vol = vol, loop = loop, seconds = tonumber(args[5]) })
         say(-1, string.format("music: %s (%s, volume %.0f%%%s)", args[3], name, vol * 100, loop and ", on repeat" or ""))

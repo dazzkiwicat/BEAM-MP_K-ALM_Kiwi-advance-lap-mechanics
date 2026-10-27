@@ -336,6 +336,17 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   kkLap zip, restart, /music set.mp3 0.4. Expect "music: set.mp3 (Darren, volume 40%, on
   repeat)" in chat and sound on every PC; kkLap.log "[C0] music playing art/sound/kkLap/set.mp3".
 
+- 27/10: **v0.15 LIVE, music plays on every PC** (Darren: "works"). That upload also carried
+  everything since v0.7.1: /start, /finish, tarseal-only painted lines, resets, 2-lap board,
+  points, bare commands, /dj. Each of those is live but UNCHECKED individually until he
+  reports on it (painted line look, recover-vs-reset judgement, points display).
+  Too quiet even at 100% (YouTube rips are mastered low). -> v0.16: volume above 1 passes
+  through as a boost, capped at 10 (RLS passes volume=2 to playOnce; UNCHECKED whether the
+  stoppable source clamps at 1). Real fix is in the file: Audacity Amplify/Normalize, or
+  ffmpeg -af loudnorm. Also worth checking: the game's Options > Audio sliders, AudioGui
+  is the interface channel.
+  NEXT (one step): upload v0.16 (main.lua + zip, delete old zip), restart, /music set.mp3 3.
+
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
 2. DONE. Console line seen.
