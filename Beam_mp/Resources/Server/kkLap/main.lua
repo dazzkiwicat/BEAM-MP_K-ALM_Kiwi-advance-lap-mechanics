@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.17"   -- same number as the client zip it was built with
+local VERSION  = "0.18"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -85,6 +85,7 @@ end
 
 -- push the whole config to one player (-1 = everyone)
 local function sendCfg(pid)
+    if pid == -1 then bubble = {} end     -- every client resets its state and re-reports who is in the bubble
     -- a direct send carries the receiver's own player id, so the client knows which laps are its own
     cfg.yourPid = (pid ~= -1) and pid or nil
     MP.TriggerClientEventJson(pid, "kkLap_cfg", cfg)
@@ -138,7 +139,18 @@ local function sortedBoard()
 end
 
 -- ------------------------------------------------- race start: shared countdown, one GO instant for all
-local race = { active = false, left = 0, tGo = nil }
+local race = { active = false, left = 0, tGo = nil, no = 0 }
+-- who is in the start bubble right now, and who has honked "ready" (v0.18, Darren's rule):
+-- the countdown starts when EVERY car in the bubble has honked. One car alone: its honk is
+-- enough. A car that arrives after GO is a new group: its own honk, its own countdown.
+bubble = {}         -- key pid:vid -> { pid, vid, name, ready, started }  (global: sendCfg above clears it)
+local function bubbleCounts()
+    local waiting, ready = 0, 0
+    for _, e in pairs(bubble) do
+        if not e.started then waiting = waiting + 1; if e.ready then ready = ready + 1 end end
+    end
+    return waiting, ready
+end
 local function startCountdown(who)
     if race.active then return end
     if race.tGo and nowMs() - race.tGo < 10000 then return end       -- just started one, ignore the parked cars
@@ -160,14 +172,39 @@ function onTick()
         MP.CancelEventTimer("kkLap_tick")
         race.active = false
         race.tGo    = nowMs()                 -- the one instant every GO-starter's lap counts from
+        race.no     = race.no + 1
+        for _, e in pairs(bubble) do if not e.started then e.started = true; e.ready = false end end   -- this group has gone; late arrivals form the next
         say(-1, "GO!")
         MP.TriggerClientEventJson(-1, "kkLap_go", { t = race.tGo })
         log("I", "GO at " .. race.tGo)
     end
 end
+function onBubble(pid, data)                   -- client: "my car entered / left the start bubble"
+    local ok, d = pcall(Util.JsonDecode, data)
+    if not ok or type(d) ~= "table" then return end
+    local key = pid .. ":" .. tostring(d.vid)
+    if d.inside then
+        bubble[key] = bubble[key] or { pid = pid, vid = d.vid, name = MP.GetPlayerName(pid) or ("p" .. pid), ready = false, started = false }
+    else
+        bubble[key] = nil
+    end
+end
+
 function onArm(pid, data)                      -- client: "my car honked inside the start bubble"
-    if not cfg.autoStart then return end
-    startCountdown(MP.GetPlayerName(pid) or ("p" .. pid))
+    if not cfg.autoStart or race.active then return end
+    local ok, d = pcall(Util.JsonDecode, data)
+    if not ok or type(d) ~= "table" then return end
+    local key  = pid .. ":" .. tostring(d.vid)
+    local name = MP.GetPlayerName(pid) or ("p" .. pid)
+    local e = bubble[key] or { pid = pid, vid = d.vid, name = name, ready = false, started = false }
+    bubble[key] = e
+    e.ready = true; e.started = false
+    local waiting, ready = bubbleCounts()
+    if ready >= waiting then
+        startCountdown(name .. (waiting > 1 and string.format(", all %d ready", waiting) or ""))
+    else
+        say(-1, string.format("%s ready  (%d of %d in the start bubble, honk when ready)", name, ready, waiting))
+    end
 end
 function onJump(pid, data)                     -- client: "my car left the bubble during the countdown"
     local name = MP.GetPlayerName(pid) or ("p" .. pid)
@@ -213,7 +250,7 @@ function onCross(pid, data)
         -- Always works, for everyone, whatever happened before (Darren's rule, 27/10).
         dbg(string.format("restart pid=%d vid=%s, partial lap dropped", pid, tostring(d.vid)))
         MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
-        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false
+        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.raceNo = nil
         r.nextCp   = (n > 1) and 2 or 1
         return
     end
@@ -223,6 +260,7 @@ function onCross(pid, data)
         -- the same instant for everyone, not from when this packet arrived.
         if race.tGo and t - race.tGo < 5000 then
             r.lapStart = race.tGo; r.lastCp = race.tGo; r.sectors = {}; r.resets = 0; r.invalid = false
+            r.raceNo = race.no                 -- laps from the same GO are compared together
             r.nextCp   = (n > 1) and 2 or 1
             MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "GO start" })
         end
@@ -264,8 +302,9 @@ function onCross(pid, data)
                 if lap == r.best then r.bestResets = r.resets end
                 MP.TriggerClientEventJson(-1, "kkLap_lap", { pid = pid, vid = d.vid, name = name, lapMs = lap, bestMs = r.best,
                                                             laps = r.laps, sectors = r.sectors, kph = kph, resets = r.resets })
-                local line = string.format("%s  lap %d  %s  %s  best %s  @%d km/h  resets %d",
-                                           name, r.laps, fmt(lap), sectorsText(r.sectors), fmt(r.best), kph, r.resets)
+                local line = string.format("%s  lap %d  %s  %s  best %s  @%d km/h  resets %d%s",
+                                           name, r.laps, fmt(lap), sectorsText(r.sectors), fmt(r.best), kph, r.resets,
+                                           r.raceNo and ("  race " .. r.raceNo) or "")
                 log("I", "LAP " .. line)
                 lapRecord(line)
                 if cfg.announceLaps then say(-1, line) end
@@ -466,6 +505,9 @@ function onPlayerJoin(pid)
     sendCfg(pid)                          -- late joiner gets the current checkpoints
 end
 function onPlayerDisconnect(pid)
+    for k in pairs(bubble) do
+        if k:match("^" .. pid .. ":") then bubble[k] = nil end
+    end
     for k in pairs(runs) do
         if k:match("^" .. pid .. ":") then runs[k] = nil end
     end
@@ -482,6 +524,7 @@ function onInit()
     MP.RegisterEvent("kkLap_posreply",     "onPosReply")
     MP.RegisterEvent("kkLap_getcfg",       "onGetCfg")
     MP.RegisterEvent("kkLap_arm",          "onArm")
+    MP.RegisterEvent("kkLap_bubble",       "onBubble")
     MP.RegisterEvent("kkLap_invalid",      "onInvalid")
     MP.RegisterEvent("kkLap_jump",         "onJump")
     MP.RegisterEvent("kkLap_tick",         "onTick")

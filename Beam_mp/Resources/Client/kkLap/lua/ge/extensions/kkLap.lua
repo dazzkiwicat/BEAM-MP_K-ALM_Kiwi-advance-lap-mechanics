@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.17'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.18'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -416,6 +416,9 @@ local function onUpdate(dt)
                 s.flashCp = 1; s.flashT = 1.5
                 cp = tgt[s.nextCp]
                 inside = insideCp(veh, cp); s.inside = inside    -- re-aim at the new target before the edge test below
+            end
+            if inStart ~= s.inStart then            -- tell the server who is in the start bubble (v0.18)
+                TriggerServerEvent('kkLap_bubble', jsonEncode({ vid = vid, inside = inStart }))
             end
             s.inStart = inStart
 

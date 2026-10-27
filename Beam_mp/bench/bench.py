@@ -312,10 +312,12 @@ positions[100] = (0, 0, 0); positions[101] = (2, 0, 0)        # both parked in t
 velocities[100] = (0.0, 0.0, 0.0); velocities[101] = (0.0, 0.0, 0.0)
 mark_chat = len(chat_out); mark_cl = len(client_log)
 for _ in range(10): tick()
-M.onHorn(100)                                                 # vehicle Lua reports the horn; car is on the line
+M.onHorn(100)                                                 # vehicle Lua reports the horn; car 100 is on the line
 check(any("honked on the line" in l for l in client_log[mark_cl:]), "a honk inside the start bubble asks for a countdown")
-M.onHorn(101)                                                 # second honk during the countdown: ignored
-check(any(pid == -1 and "race start in 5" in m for pid, m in chat_out[mark_chat:]), "server announces the countdown to everyone")
+check(any(pid == -1 and "ready  (1 of 2 in the start bubble" in m for pid, m in chat_out[mark_chat:]), "with two cars in the bubble one honk is not enough: 1 of 2 ready")
+check(not any("race start in" in m for _, m in chat_out[mark_chat:]), "no countdown until everyone in the bubble has honked")
+M.onHorn(101)                                                 # second car honks: everyone ready
+check(any(pid == -1 and "race start in 5" in m and "all 2 ready" in m for pid, m in chat_out[mark_chat:]), "second honk starts the countdown for the group")
 for _ in range(110): tick()                                   # 5.5 s: 4,3,2,1, GO
 check(any(pid == -1 and m.endswith("GO!") for pid, m in chat_out[mark_chat:]), "GO announced to everyone")
 check(flashes[-6:] == ["5", "4", "3", "2", "1", "GO!"], "countdown flashed big 5..1 GO (%s)" % flashes[-6:])
@@ -336,6 +338,8 @@ check(len(got) == 2, "both cars finish a lap after the GO start")
 if len(got) == 2:
     check(got[0]["vid"] == 100 and got[0]["lapMs"] == t100 - t_go, "vid 100 lap counted from the GO instant, not from its crossing")
     check(got[1]["vid"] == 101 and got[1]["lapMs"] == t101 - t_go, "vid 101 lap counted from the same GO instant")
+race_tags = [re.search(r"race (\d+)$", m).group(1) for pid, m in chat_out[mark_chat:] if pid == -1 and "  lap " in m and re.search(r"race (\d+)$", m)]
+check(len(race_tags) == 2 and race_tags[0] == race_tags[1], "both laps carry the same race number so they compare together (%s)" % race_tags)
 # jump start: park, arm, drive off during the countdown
 for _ in range(200): tick()                                   # 10 s cooldown after GO
 chat("/lap reset"); positions[100] = (0, 0, 0); positions[101] = (300, 300, 0); velocities[100] = (0.0, 0.0, 0.0)

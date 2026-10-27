@@ -125,7 +125,10 @@ them.) Without them nothing breaks: the small top-left toasts still carry everyt
 The start bubble always works: drive back into it at any point, mid-lap, after a reset,
 after a disqualified lap, and the partial lap is dropped and timing starts fresh. A honk
 in there arms the countdown from any state too (v0.17).
-Everyone parks in the start bubble. Anyone honks. Chat and screen count 5, 4, 3, 2, 1, GO.
+Everyone parks in the start bubble and EVERY car in there honks once (chat says "Darren ready, 1 of 3").
+When the last one honks, chat and screen count 5, 4, 3, 2, 1, GO. One car alone: its honk starts it.
+Someone arriving after GO is the next group: their own honk, their own countdown. Laps from the
+same GO carry the same race number in the chat line, so they compare together (v0.18).
 At GO every car still inside the bubble starts its lap from the same server instant, so the
 times compare. A car that was on the line and leaves the bubble before GO gets
 "<name> jumped the start" in chat for all to see. Cars arriving later just cross the line as

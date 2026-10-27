@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE: music, painted line, recover detection all confirmed on the real server. v0.16 (volume boost) pushed, not urgent. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.18 pushed (start bubble always restarts, everyone-honks start rule, race numbers), NOT yet live. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -366,6 +366,17 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   restarted everyone in the bubble.
   NEXT (one step): upload v0.17 (main.lua + zip, delete old zip), restart, reproduce: mid-lap
   R recover, drive back to the start, honk. Expect the countdown.
+
+- 27/10: Darren's start rule: one honk from EVERYONE in the bubble is required; alone, your
+  honk starts it for you; a later arrival starts their own; same-GO times are referenced
+  together. -> v0.18, bench 89: clients report entering/leaving the start bubble
+  (kkLap_bubble on the edge); server keeps the bubble roster; a honk marks that car ready
+  and the countdown starts when ready == waiting (cars not yet started); at GO the group is
+  marked started so late arrivals form the next group; race.no increments per GO and
+  stamps every lap from that GO ("race 3" at the end of the lap line). /lap race (manual)
+  still starts regardless. Roster cleared on every config push; clients re-report.
+  NEXT (one step): upload v0.18 (main.lua + zip, delete old zip), restart, two cars in the
+  bubble: first honk should print "ready (1 of 2)", second honk starts the countdown.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.
