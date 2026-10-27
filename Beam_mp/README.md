@@ -42,7 +42,7 @@ Other plugins' slash commands are left alone.
     /lap set countdown 5
     /lap line paint|draw  start/finish line: painted on the road, or flat drawn chequer (v0.8.0)
     /lap set lineWidth 10   metres across the road
-    /lap music <name> [0-1]  play art/sound/kkLap/<name>.ogg from the zip on every client (v0.11)
+    /lap music <name> [0-1] [once|<sec>]  play art/sound/kkLap/<name>.ogg on every client, on repeat (v0.14)
     /lap music stop
     /dj [text]         tell everyone where the Discord DJ set is (text is remembered) (v0.13)
     /lap times         best lap per player with sector times, resets and points, top 10

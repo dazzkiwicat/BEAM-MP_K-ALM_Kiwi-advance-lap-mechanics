@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.13"   -- same number as the client zip it was built with
+local VERSION  = "0.14"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -413,9 +413,13 @@ function onChatMessage(pid, name, msg)
     elseif cmd == "music" and args[3] == "stop" then
         MP.TriggerClientEventJson(-1, "kkLap_music", { stop = true }); say(-1, "music stopped by " .. name)
     elseif cmd == "music" and args[3] then
-        local vol = tonumber(args[4]) or cfg.musicVolume
-        MP.TriggerClientEventJson(-1, "kkLap_music", { file = args[3], vol = vol })
-        say(-1, string.format("music: %s (%s, volume %.0f%%)", args[3], name, vol * 100)); log("I", "music " .. args[3] .. " by " .. name)
+        -- /music <name> [volume 0-1] [once | <seconds>]   loops by default (DJ set); "once" plays through;
+        -- a number of seconds is the fallback loop clock for games that give us no stoppable source
+        local vol  = tonumber(args[4]) or cfg.musicVolume
+        local loop = args[5] ~= "once"
+        MP.TriggerClientEventJson(-1, "kkLap_music", { file = args[3], vol = vol, loop = loop, seconds = tonumber(args[5]) })
+        say(-1, string.format("music: %s (%s, volume %.0f%%%s)", args[3], name, vol * 100, loop and ", on repeat" or ""))
+        log("I", "music " .. args[3] .. " by " .. name)
     elseif cmd == "times" then
         local list = sortedBoard()
         if #list == 0 then say(pid, string.format("no times on the board yet (a driver needs %d laps first)", cfg.minLaps)) end

@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.13 (/dj pointer; commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: upload v0.13. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.14 (/music on repeat; /dj pointer; commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -310,6 +310,19 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   for players written in the reply (join the voice channel on the same PC, bot volume via
   right-click > User Volume). UI-app YouTube embed noted as an UNCHECKED experiment, not built.
   NEXT (one step): upload v0.13 (main.lua + zip, delete old zip), restart, /dj <your text>.
+
+- 27/10: Darren first: "transmitting as a live file over the game", then "back to choice 2".
+  Parked finding for the live-stream day: BeamMP's own MPCoreNetwork.lua:303 runs
+  be:executeJS(...) in the game's Chromium UI, so GE Lua could create an <audio src=URL>
+  element there and play an Icecast stream with no UI app on the layout. UNCHECKED: codecs
+  in that Chromium build, and he'd need an Icecast source somewhere (his PC or a VPS; the
+  BeamMP container cannot run it). Not built.
+  -> v0.14: /music loops by default (isPlaying poll once a second, restart when it stops;
+  UNCHECKED that source:isPlaying exists, pcall'd), "once" to play through, or a number of
+  seconds as a timed re-fire for the playOnce fallback. Waiting on an audio file from
+  Darren: commit mp3/ogg into Resources/Client/kkLap/art/sound/kkLap/, I convert with
+  ffmpeg (here: /usr/bin/ffmpeg) to 64-96 kbps ogg and rebuild the zip. Size warning given.
+  NEXT (one step): Darren commits the track file; or upload v0.14 and test the rest.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

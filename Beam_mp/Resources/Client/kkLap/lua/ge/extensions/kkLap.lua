@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.13'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.14'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -209,10 +209,31 @@ end
 -- the file from the mod zip (art/sound/kkLap/<name>.ogg). Same calls RLS and BeamJoy use:
 -- Engine.Audio.createSource(channel, path) -> id, then the source object plays/sets volume,
 -- Engine.Audio.deleteSource(id) stops it. playOnce is the fallback (no stop, no volume change).
-local music = { id = nil, src = nil }
+local music = { id = nil, src = nil, loop = false, path = nil, vol = 0.5, every = nil, t = 0, poll = 0 }
 local function musicStop()
     if music.id then pcall(function() Engine.Audio.deleteSource(music.id) end) end
-    music.id, music.src = nil, nil
+    music.id, music.src, music.loop, music.every = nil, nil, false, nil
+end
+-- loop (v0.14, DJ sets): once a second ask the source whether it is still playing and restart
+-- it when it stops. If the game gives us no stoppable source (playOnce fallback), the server
+-- can pass the track length in seconds and we re-fire playOnce on that clock.
+local function musicTick(dt)
+    if not music.loop then return end
+    music.poll = music.poll + dt
+    if music.poll < 1 then return end
+    music.poll = 0
+    if music.src then
+        local ok, playing = pcall(function() return music.src:isPlaying() end)
+        if ok and playing == false then
+            dbg('music looped'); pcall(function() music.src:play(-1) end)
+        end
+    elseif music.every then
+        music.t = music.t + 1
+        if music.t >= music.every then
+            music.t = 0; dbg('music looped (timed)')
+            pcall(function() Engine.Audio.playOnce('AudioGui', music.path, { volume = music.vol }) end)
+        end
+    end
 end
 local function onMusic(data)
     local d = jsonDecode(data)
@@ -221,6 +242,7 @@ local function onMusic(data)
     if d.stop or not d.file then dbg('music stopped'); return end
     local path = 'art/sound/kkLap/' .. tostring(d.file) .. '.ogg'
     local vol  = tonumber(d.vol) or 0.5
+    music.path, music.vol, music.loop, music.every, music.t = path, vol, d.loop ~= false, tonumber(d.seconds), 0
     local ok, err = pcall(function()
         music.id  = Engine.Audio.createSource('AudioGui', path)
         music.src = music.id and scenetree.findObjectById(music.id)
@@ -326,6 +348,7 @@ local function onUpdate(dt)
         end
     end
 
+    musicTick(dt)
     if pending then
         pending.t = pending.t + dt
         if pending.t > 1 then dbg('no surface report from the car in 1 s'); sendPosReply(false, 'UNKNOWN') end
