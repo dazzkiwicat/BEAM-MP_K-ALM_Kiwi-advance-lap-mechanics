@@ -91,7 +91,9 @@ Never put a colon in an event name. BeamMP splits `name:data` at the first colon
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
 
-## Music (v0.11, v0.14 loops)
+## Music (v0.11, v0.14 loops, v0.21 autoplay)
+v0.21: an admin's /music <name> is remembered in config as the track for everyone. Each player
+hears it as soon as they have a car, joiners included, with no command. /music stop clears it.
 It plays through the "Other" slider in the game's Options > Audio (so do the countdown beeps).
 If it is quiet, check that slider before anything else (Darren, 27/10).
 The track does NOT go in the kkLap zip or in git. It lives in its own client zip on the

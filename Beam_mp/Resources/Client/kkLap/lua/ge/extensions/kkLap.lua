@@ -14,12 +14,13 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.20'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.21'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
 local counting = false       -- a shared countdown is running (server says so)
 local buildLine, removeLine  -- defined further down, used by onCfg above them
+local musicAutoCheck         -- defined in the music block, used by onVehicleSpawned above it
 local tgt      = {}          -- the targets in order: checkpoints, then the separate finish line if there is one
 local lastDbg  = 0
 
@@ -87,6 +88,7 @@ local function onCfg(data)
     if cfg.markers == nil then cfg.markers = true end   -- config.json from before v0.4.0
     lapClock.running = false; realtime('')              -- track changed or reset: clock off
     if cfg.lineStyle == nil then cfg.lineStyle = 'paint' end
+    musicAutoCheck()      -- starts, keeps, or clears the autoplay track (music block below)
     tgt = {}
     for i, c in ipairs(cfg.checkpoints) do tgt[i] = c end
     if cfg.finish then tgt[#tgt + 1] = cfg.finish end     -- point-to-point: finish is the last target
@@ -181,7 +183,7 @@ local function loadVE(vid)
     local veh = be:getObjectByID(vid)
     if veh then veh:queueLuaCommand("extensions.loadModulesInDirectory('lua/vehicle/extensions/kkLap')") end
 end
-local function onVehicleSpawned(vid) loadVE(vid) end
+local function onVehicleSpawned(vid) loadVE(vid); if MPVehicleGE.getOwnMap()[vid] then musicAutoCheck() end end
 
 local function onGo(data)
     counting = false
@@ -214,7 +216,7 @@ end
 local music = { id = nil, src = nil, loop = false, path = nil, vol = 0.5, every = nil, t = 0, poll = 0 }
 local function musicStop()
     if music.id then pcall(function() Engine.Audio.deleteSource(music.id) end) end
-    music.id, music.src, music.loop, music.every = nil, nil, false, nil
+    music.id, music.src, music.loop, music.every, music.active = nil, nil, false, nil, false
 end
 -- loop (v0.14, DJ sets): once a second ask the source whether it is still playing and restart
 -- it when it stops. If the game gives us no stoppable source (playOnce fallback), the server
@@ -237,18 +239,43 @@ local function musicTick(dt)
         end
     end
 end
+local function musicPath(name)
+    -- mp3 plays too (RLS's player globs mp3/ogg/wav/flac through the same call): give the
+    -- name with its extension, or without for .ogg
+    local file = tostring(name)
+    if not file:find('%.%w+$') then file = file .. '.ogg' end
+    return 'art/sound/kkLap/' .. file
+end
+local musicPlay   -- defined below; used by onMusic and by the autoplay
+
+-- autoplay (v0.21): the server's config carries musicAuto = the track every player should
+-- hear. It starts when the player has a car (own vehicle spawned), not on a command; the
+-- admin's /music sets or clears it. Only (re)starts when the track actually changed, since
+-- the config is pushed on every admin command.
+musicAutoCheck = function()
+    local want = cfg.musicAuto and musicPath(cfg.musicAuto) or nil
+    if not want then
+        if music.path and music.loop then musicStop(); dbg('music autoplay cleared') end
+        return
+    end
+    if music.path == want and music.active then return end                  -- already on it (even if the game refused: no retry storm)
+    if next(MPVehicleGE.getOwnMap()) == nil then return end                   -- no car yet: onVehicleSpawned will call again
+    musicPlay(want, tonumber(cfg.musicVolume) or 0.5, true, nil)
+    dbg('music autoplay ' .. want)
+end
+
 local function onMusic(data)
     local d = jsonDecode(data)
     if not d then return end
     musicStop()
     if d.stop or not d.file then dbg('music stopped'); return end
-    -- mp3 plays too (RLS's player globs mp3/ogg/wav/flac through the same call): give the
-    -- name with its extension, or without for .ogg
-    local file = tostring(d.file)
-    if not file:find('%.%w+$') then file = file .. '.ogg' end
-    local path = 'art/sound/kkLap/' .. file
-    local vol  = tonumber(d.vol) or 0.5
-    music.path, music.vol, music.loop, music.every, music.t = path, vol, d.loop ~= false, tonumber(d.seconds), 0
+    musicPlay(musicPath(d.file), tonumber(d.vol) or 0.5, d.loop ~= false, tonumber(d.seconds))
+end
+
+musicPlay = function(path, vol, loop, seconds)
+    musicStop()
+    local d = { loop = loop, seconds = seconds }
+    music.path, music.vol, music.loop, music.every, music.t, music.active = path, vol, d.loop ~= false, tonumber(d.seconds), 0, true
     local ok, err = pcall(function()
         music.id  = Engine.Audio.createSource('AudioGui', path)
         music.src = music.id and scenetree.findObjectById(music.id)

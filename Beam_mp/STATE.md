@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.20 pushed (deltas, id-keyed board, wrong way, Discord poster script), NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -419,6 +419,14 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
     or Darren runs it on his PC with those four variables set.
   NEXT (one step): upload v0.20 (main.lua + zip, delete old zip), restart, drive two laps:
   second lap's sector flashes should carry +/- numbers. Separately: set the four secrets.
+
+- 27/10: Darren: music should start when the car loads, not on a command, admin sets it.
+  -> v0.21, bench 107: cfg.musicAuto (+ musicVolume) set by the admin's /music <name>,
+  cleared by /music stop, persisted; client starts it from onVehicleSpawned (own car) or on
+  config arrival if a car exists; only restarts when the track changes (music.active flag,
+  so the config push on every admin command, and respawns, leave it alone).
+  NEXT (one step): upload v0.21 (main.lua + zip, delete old zip), restart, /music set.mp3 0.4
+  once; then leave and rejoin: it should play by itself when your car appears.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

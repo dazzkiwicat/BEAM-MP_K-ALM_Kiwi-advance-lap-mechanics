@@ -406,6 +406,16 @@ for _ in range(70): tick()
 check(sum(1 for l in client_log[mark:] if "music looped (timed)" in l) == 1, "timed loop re-fires after the given seconds")
 mark = len(client_log); chat("/lap music stop")
 check(any("music stopped" in l for l in client_log[mark:]), "/lap music stop reaches the client")
+# autoplay (v0.21): /music sets the track in config; a fresh car gets it without any command
+chat("/music set.mp3 0.4")
+check(json.load(open(cfgfile)).get("musicAuto") == "set.mp3", "/music stores the track as the autoplay for everyone")
+mark = len(client_log); chat("/set minLapMs 5000")           # any config push: must NOT restart the track
+check(not any("music autoplay" in l for l in client_log[mark:]), "a config push does not restart a track that is already playing")
+mark = len(client_log)
+M.onVehicleSpawned(100)                                       # a (re)spawned own car: already playing, nothing happens
+check(not any("music autoplay" in l for l in client_log[mark:]), "respawning while it plays does not restart it")
+chat("/music stop")
+check(json.load(open(cfgfile)).get("musicAuto") is None, "/music stop clears the autoplay")
 
 # ------------------------------------------------------------------ scenario 11: commands without the lap word
 mark = len(chat_out)

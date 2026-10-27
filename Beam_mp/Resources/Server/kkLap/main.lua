@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.20"   -- same number as the client zip it was built with
+local VERSION  = "0.21"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -57,6 +57,7 @@ local defaultCfg = {
         "Back in the start bubble any time = fresh start, partial lap dropped.",
         "Two laps minimum before your best goes on the board. Points once 3 drivers have times.",
     },
+    musicAuto    = nil,      -- track every player hears as soon as they have a car; set by /music <name>, cleared by /music stop (v0.21)
     musicVolume  = 0.5,      -- /lap music <name> plays art/sound/kkLap/<name>.ogg from the zip on every client (v0.11)
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
@@ -543,6 +544,7 @@ function onChatMessage(pid, name, msg)
     elseif cmd == "dj" then
         say(-1, "[DJ] " .. tostring(cfg.djText))
     elseif cmd == "music" and args[3] == "stop" then
+        cfg.musicAuto = nil; saveCfg(); sendCfg(-1)      -- clears the autoplay for joiners too
         MP.TriggerClientEventJson(-1, "kkLap_music", { stop = true }); say(-1, "music stopped by " .. name)
     elseif cmd == "music" and args[3] then
         -- /music <name> [volume 0-1] [once | <seconds>]   loops by default (DJ set); "once" plays through;
@@ -551,6 +553,7 @@ function onChatMessage(pid, name, msg)
         -- Capped at 10 so a typo does not deafen the server. YouTube rips are quiet (Darren, 27/10).
         local vol  = math.min(10, math.max(0, tonumber(args[4]) or cfg.musicVolume))
         local loop = args[5] ~= "once"
+        if loop then cfg.musicAuto = args[3]; cfg.musicVolume = vol; saveCfg(); sendCfg(-1) end   -- joiners get it on their first car
         MP.TriggerClientEventJson(-1, "kkLap_music", { file = args[3], vol = vol, loop = loop, seconds = tonumber(args[5]) })
         say(-1, string.format("music: %s (%s, volume %.0f%%%s)", args[3], name, vol * 100, loop and ", on repeat" or ""))
         log("I", "music " .. args[3] .. " by " .. name)
