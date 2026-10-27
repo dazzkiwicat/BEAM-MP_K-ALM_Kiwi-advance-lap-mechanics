@@ -371,6 +371,8 @@ check(any("without the lap word" in m for _, m in chat_out[mark:]), "/help is ou
 mark = len(chat_out); chat("/set minLapMs 4000")
 check(any("minLapMs = 4000" in m for _, m in chat_out[mark:]), "/set carries its arguments through")
 chat("/set minLapMs 5000")
+mark = len(chat_out); chat("/dj Voice channel #kiwi-dj, link in #announcements"); chat("/dj")
+check(sum(1 for pid, m in chat_out[mark:] if pid == -1 and "[DJ] Voice channel #kiwi-dj" in m) == 2, "/dj sets and repeats the Discord pointer to everyone")
 
 # ------------------------------------------------------------------ scenario 8: vehicle-side file, in its own VM, reports the horn edge once
 check(any("loadModulesInDirectory('lua/vehicle/extensions/kkLap')" in c for _, c in ve_cmds), "GE side loads kkLapVE into the cars")

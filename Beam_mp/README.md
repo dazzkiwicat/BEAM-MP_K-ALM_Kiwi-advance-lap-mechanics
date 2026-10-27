@@ -44,6 +44,7 @@ Other plugins' slash commands are left alone.
     /lap set lineWidth 10   metres across the road
     /lap music <name> [0-1]  play art/sound/kkLap/<name>.ogg from the zip on every client (v0.11)
     /lap music stop
+    /dj [text]         tell everyone where the Discord DJ set is (text is remembered) (v0.13)
     /lap times         best lap per player with sector times, resets and points, top 10
     /lap set minLaps 2        laps a driver needs before their best goes on the board (v0.10)
     /lap set pointsMinDrivers 3   drivers needed before points show
