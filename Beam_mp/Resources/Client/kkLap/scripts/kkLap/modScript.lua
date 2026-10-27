@@ -3,4 +3,4 @@
 -- scripts/BeamMP/modScript.lua. The guide's diagram shows it one level up; the real mod doesn't.
 load('kkLap')
 setExtensionUnloadMode('kkLap', 'manual')
-log('I', 'kkLap', '[KKLAP] modScript ran, kkLap v0.09')   -- keep in step with M.VERSION
+log('I', 'kkLap', '[KKLAP] modScript ran, kkLap v0.10')   -- keep in step with M.VERSION

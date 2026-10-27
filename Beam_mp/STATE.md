@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.09 (/lap start moves the line in place, /lap finish point-to-point, tarseal-only lines painted across the road, ring removed, ms clock rounding fix) bench-passed 61 checks, NOT yet live. Next move: upload v0.09, /lap start on tarseal. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.10 (resets counted, position resets invalidate, 2-lap minimum, points; plus everything since v0.7.1: /lap start, /lap finish, tarseal-only painted lines) bench-passed 72 checks, NOT yet live. Next move: upload v0.10. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -260,6 +260,27 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   NEXT (one step): upload v0.09 (main.lua + zip, delete the old zip), restart, /lap clear,
   park on tarseal, /lap start, then /lap mark round the course, drive a lap. Then test
   /lap finish somewhere and a run start->finish; then /lap finish same.
+
+- 27/10: Darren: count physics resets (allowed, shown in the output) but not position
+  slews (cheating); minimum 2 laps before any lap counts for the record; a simple points
+  system, closer to the top time = more points, only once a few people have times.
+  -> v0.10, bench 72 checks. Reset detection: the car's Lua onReset (hook proven live via
+  BeamMP's own VE files) calls kkLap.onVehReset(id); GE compares with the last position it
+  advanced by normal driving: moved > 2 m = position reset -> kkLap_invalid, server tells
+  everyone at once and refuses the lap at the line (laps.log gets a NOT COUNTED line);
+  else physics reset, counted, sent with the next crossing, summed per lap, in the LAP
+  line and board. Backstop: a jump > 100*dt+150 m in one frame with no reset event within
+  1 s = teleport, invalid. (First cut was 15 m and the bench's 50 m hops tripped it: the
+  bench teleports the fake car; real cars don't. Coarse is right here, the reset path is
+  the real judge.) Board: entry only when r.laps >= minLaps (2); best over all laps.
+  Points: floor(100*top/yours), shown when >= pointsMinDrivers (3) on the board.
+  UNCHECKED live: that recover/respawn fire the vehicle onReset AFTER the move (if before,
+  moved reads 0 and a recover counts as a physics reset; the backstop would still catch a
+  big respawn). Test by recovering mid-lap and reading the chat.
+  v0.09 never uploaded; go straight to v0.10.
+  NEXT (one step): upload v0.10 (main.lua + zip, delete the old zip), restart, drive a lap
+  with one Insert reset (expect "physics reset 1 (counted)"), then a lap with one R recover
+  (expect "lap will not count: position reset").
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

@@ -14,10 +14,10 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.09'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.10'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
-local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent }
+local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
 local counting = false       -- a shared countdown is running (server says so)
 local buildLine, removeLine  -- defined further down, used by onCfg above them
 local tgt      = {}          -- the targets in order: checkpoints, then the separate finish line if there is one
@@ -199,6 +199,7 @@ local function onGo(data)
             s.started = true
             s.flashCp = 1; s.flashT = 1.5
             s.armed   = false
+            s.invalid = false; s.physResets = 0
             dbg(string.format('vid %d GO start', vid))
         end
     end
@@ -234,6 +235,36 @@ end
 function M.onSurface(vid, sealed, surface)
     if not pending or pending.vid ~= vid then return end
     sendPosReply(sealed == true, surface)
+end
+
+-- a lap that must not count: tell the server once, it does the announcing
+function M.invalidate(vid, reason)
+    local s = state[vid]
+    if not s or not s.started or s.invalid then return end
+    s.invalid = true
+    s.slewT = 0
+    TriggerServerEvent('kkLap_invalid', jsonEncode({ vid = vid, reason = reason }))
+    dbg(string.format('vid %d lap invalid: %s', vid, reason))
+    flash('LAP WILL NOT COUNT', 2, true)
+end
+
+-- called from the car's Lua (kkLapVE onReset) after ANY reset. Moved = position reset. Stayed = physics reset.
+function M.onVehReset(vid)
+    local s, veh = state[vid], be:getObjectByID(vid)
+    if not (s and veh and s.lastPos) then return end
+    local p = veh:getPosition()
+    local dx, dy, dz = p.x - s.lastPos.x, p.y - s.lastPos.y, p.z - s.lastPos.z
+    local moved = math.sqrt(dx*dx + dy*dy + dz*dz)
+    s.slewT = 0
+    s.lastPos.x, s.lastPos.y, s.lastPos.z = p.x, p.y, p.z
+    if not s.started then return end
+    if moved > 2 then
+        M.invalidate(vid, string.format('position reset, moved %.0f m', moved))
+    else
+        s.physResets = (s.physResets or 0) + 1
+        dbg(string.format('vid %d physics reset #%d counted', vid, s.physResets))
+        toast(string.format('physics reset %d (counted)', s.physResets), 3)
+    end
 end
 
 -- ----------------------------------------------------- per-frame check
@@ -284,6 +315,28 @@ local function onUpdate(dt)
             local dx, dy, dz = p.x - cp.x, p.y - cp.y, p.z - cp.z
             local inside = (dx*dx + dy*dy + dz*dz) <= (cp.r * cp.r)
 
+            -- resets and teleports (v0.10). Physics reset (Insert) leaves the car where it is: allowed,
+            -- counted. Anything that MOVES the car mid-lap (recover, teleport, map respawn) makes the
+            -- lap not count. lastPos is only advanced by normal movement, so a jump stays visible to
+            -- the reset callback that arrives a frame later (kkLap.onVehReset, from the car's Lua).
+            if s.lastPos then
+                local jx, jy, jz = p.x - s.lastPos.x, p.y - s.lastPos.y, p.z - s.lastPos.z
+                local jump = math.sqrt(jx*jx + jy*jy + jz*jz)
+                if jump > 100 * dt + 150 then
+                    -- a backstop for teleports with no reset event. Coarse on purpose: recover and
+                    -- respawn fire the reset callback and are judged there at 2 m.
+                    s.slewT = 1.0; s.slewDist = jump              -- wait 1 s for a reset event before judging
+                else
+                    s.lastPos.x, s.lastPos.y, s.lastPos.z = p.x, p.y, p.z
+                    if s.slewT and s.slewT > 0 then
+                        s.slewT = s.slewT - dt
+                        if s.slewT <= 0 then M.invalidate(vid, string.format('moved %.0f m in one frame', s.slewDist or 0)) end
+                    end
+                end
+            else
+                s.lastPos = { x = p.x, y = p.y, z = p.z }
+            end
+
             -- jump start: a car that was on the line when the countdown began and leaves the
             -- bubble before GO. Announced to everyone by the server. Shame is the penalty.
             if counting and s.armed and not s.jumpSent and not insideCp(veh, cfg.checkpoints[1]) then
@@ -297,10 +350,12 @@ local function onUpdate(dt)
                 -- BeamNG: getVelocityXYZ returns three numbers in m/s (same call BeamMP's MPVehicleGE uses).
                 local vx, vy, vz = veh:getVelocityXYZ()
                 local kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6
-                TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = s.nextCp, kph = kph, pos = { x = p.x, y = p.y, z = p.z } }))
+                TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = s.nextCp, kph = kph, resets = s.physResets or 0, pos = { x = p.x, y = p.y, z = p.z } }))
+                s.physResets = 0
                 dbg(string.format('vid %d entered cp %d', vid, s.nextCp))
                 s.started = true                   -- from now on, passed checkpoints are drawn as done
                 s.flashCp = s.nextCp; s.flashT = 1.5   -- and this one flashes white for 1.5 s
+                if s.nextCp == 1 or (cfg.finish and s.nextCp == n) then s.invalid = false; s.physResets = 0 end   -- new lap: clean slate
                 if cfg.finish and s.nextCp == n then s.started = false end   -- crossed the finish: course done, back to fresh
                 s.nextCp = (s.nextCp % n) + 1
                 inside   = false   -- new target sphere: start outside it, or touching spheres get missed (bench, 26/10)

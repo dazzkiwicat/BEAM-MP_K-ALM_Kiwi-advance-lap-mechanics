@@ -47,7 +47,12 @@ local function reportSurface()
     obj:queueGameEngineLua(string.format('kkLap.onSurface(%d, %s, %q)', obj:getID(), tostring(ok), table.concat(parts, ',')))
 end
 
-local function onReset() was = false end
+-- BeamNG calls onReset in vehicle Lua on every reset (Insert key, recover, teleport...). BeamMP's own
+-- VE files hook it the same way. GE decides whether the car moved (position reset) or not (physics reset).
+local function onReset()
+    was = false
+    obj:queueGameEngineLua("kkLap.onVehReset(" .. obj:getID() .. ")")
+end
 
 M.updateGFX     = updateGFX
 M.onReset       = onReset

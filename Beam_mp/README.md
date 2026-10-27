@@ -40,7 +40,9 @@ Runs the real server and client Lua against each other with fake BeamMP calls an
     /lap set countdown 5
     /lap line paint|draw  start/finish line: painted on the road, or flat drawn chequer (v0.8.0)
     /lap set lineWidth 10   metres across the road
-    /lap times         best lap per player with sector times, top 10 (v0.5.0)
+    /lap times         best lap per player with sector times, resets and points, top 10
+    /lap set minLaps 2        laps a driver needs before their best goes on the board (v0.10)
+    /lap set pointsMinDrivers 3   drivers needed before points show
     /lap announce on|off  every sector to everyone in chat (default off; laps always announce)
     /lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
     /lap debug on|off  forward client debug lines to the server log
@@ -58,6 +60,17 @@ so one file tells the whole story. Game side, if ever needed: grep KKLAP beamng.
 Never put a colon in an event name. BeamMP splits `name:data` at the first colon on both
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
+
+## Resets, the board and points (v0.10)
+A physics reset (Insert, car stays put) is allowed and counted: it shows on the lap line
+("resets 2") and on the board. Anything that MOVES the car mid-lap (recover, respawn,
+teleport) makes that lap not count: everyone sees "<name> lap will not count: position
+reset, moved 30 m" the moment it happens, and "<name> 1:02.3 not counted" at the line.
+Judged in the car's own reset callback at 2 m, with a 150 m per-frame backstop for
+teleports that fire no reset. A driver's best goes on the board only once they have
+minLaps (2) laps in the run; then any of their laps can be the record.
+Points: 100 for the top time, floor(100 * top / yours), so 10% slower is 90 points. They
+only appear in /lap times once pointsMinDrivers (3) drivers have times.
 
 ## Start and finish (v0.09)
 By default the start line is the finish line: a loop, and every crossing after the first

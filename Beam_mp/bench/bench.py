@@ -220,9 +220,37 @@ check("TIMING STARTED" in flashes, "timing started flashed")
 check(realtime[0] == "LAP  0:05.100", "running clock shows the finished lap for a few seconds")
 check(any(pid == -1 and "Darren  lap 1" in m for pid, m in chat_out), "lap announced to everyone in chat")
 check(pathlib.Path("Resources/Server/kkLap/laps.log").exists(), "laps.log written")
-check(pathlib.Path("Resources/Server/kkLap/times.json").exists(), "times.json written")
 mark = len(chat_out); chat("/lap times")
-check(any("1. Darren" in m for _, m in chat_out[mark:]), "/lap times lists the best lap")
+check(any("no times on the board yet" in m for _, m in chat_out[mark:]), "one lap is not enough for the board (minLaps 2)")
+check(any("one more lap and your best counts" in m for _, m in chat_out), "driver is told the minimum")
+# second lap with one physics reset in it: counted, allowed
+drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 20)
+M.onVehReset(100)                                              # Insert: car did not move -> physics reset
+check(any("physics reset #1 counted" in l for l in client_log), "physics reset in place is counted, lap goes on")
+drive(100, [(50, 0, 0)] * 30 + [(0, 0, 0)])
+lap2 = laps()[-1]
+check(lap2["laps"] == 2 and lap2["resets"] == 1, "lap 2 counts and carries resets=1")
+mark = len(chat_out); chat("/lap times")
+check(any("1. Darren" in m and "resets 0" in m for _, m in chat_out[mark:]), "/lap times lists the best lap after 2 laps (lap 1, which had no resets)")
+check(pathlib.Path("Resources/Server/kkLap/times.json").exists(), "times.json written once the driver has 2 laps")
+check(any("points appear once 3 drivers" in m for _, m in chat_out[mark:]), "points wait for 3 drivers")
+check(S.globals().pointsFor(60000, 60000) == 100 and S.globals().pointsFor(66000, 60000) == 90 and S.globals().pointsFor(120000, 60000) == 50,
+      "points: 100 at the top, 90 at 10% slower, 50 at double")
+# third lap with a position reset (recover moved the car 30 m): must not count
+before = len(laps()); mark = len(chat_out)
+drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 20)
+positions[100] = (50, 30, 0); M.onVehReset(100)                # recover: car jumped 30 m sideways
+check(any(pid == -1 and "lap will not count" in m and "position reset" in m for pid, m in chat_out[mark:]), "position reset is announced to everyone at once")
+drive(100, [(50, 0, 0)] * 30 + [(0, 0, 0)])
+check(len(laps()) == before and any("not counted" in m for _, m in chat_out[mark:]), "the invalidated lap is not counted at the line")
+# teleport with no reset event at all (map teleport): caught by the frame-jump detector after 1 s
+before = len(laps()); mark = len(chat_out)
+drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 10)
+positions[100] = (400, 400, 0); tick(); positions[100] = (50, 0, 0)
+for _ in range(25): tick()
+check(any("moved" in m and "in one frame" in m for _, m in chat_out[mark:]), "a 500 m jump with no reset event invalidates the lap")
+drive(100, [(50, 0, 0)] * 40 + [(0, 0, 0)])
+check(len(laps()) == before, "that lap is not counted either")
 
 # ------------------------------------------------------------------ scenario 2b: marker colours follow the lap (pure function, no ffi needed)
 st = lambda **k: C.table(**k)
@@ -349,6 +377,8 @@ check(ge_calls == ['kkLap.onSurface(100, false, "FL=ASPHALT,FR=ASPHALT,RL=GRASS,
 V.globals().wheels["wheels"][2]["contactMaterialID1"] = 10
 ge_calls.clear(); VE.reportSurface()
 check(ge_calls == ['kkLap.onSurface(100, true, "FL=ASPHALT,FR=ASPHALT,RL=ASPHALT,RR=NONE")'], "all touching wheels on asphalt = sealed, airborne wheel ignored")
+ge_calls.clear(); VE.onReset()
+check(ge_calls == ["kkLap.onVehReset(100)"], "vehicle reset is reported to the game side")
 
 # ------------------------------------------------------------------ scenario 6: /lap markers off reaches every client
 mark = len(server_log)

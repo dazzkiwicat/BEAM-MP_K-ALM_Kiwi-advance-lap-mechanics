@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.09"   -- same number as the client zip it was built with
+local VERSION  = "0.10"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -45,6 +45,8 @@ local defaultCfg = {
     countdown    = 5,        -- seconds
     lineStyle    = "paint",  -- start/finish line: "paint" = real road decal, "draw" = flat chequer (v0.8.0)
     lineWidth    = 10,       -- metres across the road
+    minLaps      = 2,        -- laps a driver must complete before any lap of theirs counts for the board (v0.10)
+    pointsMinDrivers = 3,    -- points only show once this many drivers are on the board
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
     checkpoints  = {},
@@ -171,12 +173,33 @@ function onJump(pid, data)                     -- client: "my car left the bubbl
     log("I", name .. " jumped the start")
 end
 
+-- points: 100 for the top time, less the further off it you are. floor(100 * top / yours).
+-- 10% slower = 90 points. Only shown once cfg.pointsMinDrivers drivers have times (Darren, 27/10).
+function pointsFor(bestMs, topMs)
+    if not bestMs or not topMs or bestMs <= 0 then return 0 end
+    return math.floor(100 * topMs / bestMs)
+end
+
+-- client says the lap in progress must not count (position reset, teleport)
+function onInvalid(pid, data)
+    local ok, d = pcall(Util.JsonDecode, data)
+    if not ok or type(d) ~= "table" then return end
+    local key = pid .. ":" .. tostring(d.vid)
+    local r = runs[key]
+    if not r or not r.lapStart then return end
+    r.invalid = true
+    local name = MP.GetPlayerName(pid) or ("p" .. pid)
+    say(-1, name .. "  lap will not count: " .. tostring(d.reason))
+    log("I", name .. " lap invalidated: " .. tostring(d.reason))
+end
+
 function onCross(pid, data)
     local ok, d = pcall(Util.JsonDecode, data)
     if not ok or type(d) ~= "table" then log("E", "bad cross payload from " .. pid .. ": " .. tostring(data)); return end
 
     local key = pid .. ":" .. tostring(d.vid)
-    local r   = runs[key] or { nextCp = 1, lapStart = nil, lastCp = nil, best = nil, laps = 0, sectors = {} }
+    local r   = runs[key] or { nextCp = 1, lapStart = nil, lastCp = nil, best = nil, laps = 0, sectors = {}, resets = 0, invalid = false }
+    r.resets = (r.resets or 0) + (tonumber(d.resets) or 0)      -- physics resets since the last checkpoint, from the client
     runs[key] = r
     local t   = nowMs()
     local n   = #cfg.checkpoints + (cfg.finish and 1 or 0)   -- targets: checkpoints, then the finish line if separate
@@ -187,7 +210,7 @@ function onCross(pid, data)
         -- GO start (before the wrong-cp check: a car that rolled into the bubble expects cp2 already): the car was sitting in the bubble at GO. Its lap counts from the GO instant,
         -- the same instant for everyone, not from when this packet arrived.
         if race.tGo and t - race.tGo < 5000 then
-            r.lapStart = race.tGo; r.lastCp = race.tGo; r.sectors = {}
+            r.lapStart = race.tGo; r.lastCp = race.tGo; r.sectors = {}; r.resets = 0; r.invalid = false
             r.nextCp   = (n > 1) and 2 or 1
             MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "GO start" })
         end
@@ -204,7 +227,7 @@ function onCross(pid, data)
         -- point-to-point: the start only starts. Crossing it mid-run restarts the run.
         if r.lapStart then dbg("run restarted at the start line") end
         MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
-        r.lapStart = t; r.lastCp = t; r.sectors = {}
+        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false
         r.nextCp   = (n > 1) and 2 or 1
         return
     end
@@ -216,29 +239,41 @@ function onCross(pid, data)
             table.insert(r.sectors, t - r.lastCp)            -- last sector: previous cp -> finish line
             if lap < cfg.minLapMs then
                 dbg("lap rejected, too short: " .. lap)
+            elseif r.invalid then
+                local name = MP.GetPlayerName(pid) or ("p" .. pid)
+                log("I", "LAP NOT COUNTED " .. name .. " " .. fmt(lap) .. " (invalidated)")
+                lapRecord(name .. "  NOT COUNTED  " .. fmt(lap) .. "  (position reset)")
+                say(-1, name .. "  " .. fmt(lap) .. "  not counted")
             else
                 r.laps = r.laps + 1
                 if not r.best or lap < r.best then r.best = lap end
                 local name = MP.GetPlayerName(pid) or ("p" .. pid)
                 local kph  = math.floor(tonumber(d.kph) or 0)
+                if lap == r.best then r.bestResets = r.resets end
                 MP.TriggerClientEventJson(-1, "kkLap_lap", { pid = pid, vid = d.vid, name = name, lapMs = lap, bestMs = r.best,
-                                                            laps = r.laps, sectors = r.sectors, kph = kph })
-                local line = string.format("%s  lap %d  %s  %s  best %s  @%d km/h",
-                                           name, r.laps, fmt(lap), sectorsText(r.sectors), fmt(r.best), kph)
+                                                            laps = r.laps, sectors = r.sectors, kph = kph, resets = r.resets })
+                local line = string.format("%s  lap %d  %s  %s  best %s  @%d km/h  resets %d",
+                                           name, r.laps, fmt(lap), sectorsText(r.sectors), fmt(r.best), kph, r.resets)
                 log("I", "LAP " .. line)
                 lapRecord(line)
                 if cfg.announceLaps then say(-1, line) end
-                local e = board[name]
-                if not e or lap < e.bestMs then
-                    board[name] = { bestMs = lap, sectors = r.sectors, laps = (e and e.laps or 0) + 1, kph = kph }
-                else
-                    e.laps = e.laps + 1
+                -- the board: only once this driver has minLaps laps in this run; then ANY of their laps can be the record
+                if r.laps >= cfg.minLaps then
+                    local e = board[name]
+                    if not e or r.best < e.bestMs then
+                        board[name] = { bestMs = r.best, sectors = r.sectors, laps = (e and e.laps or 0) + 1, kph = kph, resets = r.bestResets or 0 }
+                    else
+                        e.laps = e.laps + 1
+                    end
+                    saveBoard()
+                elseif r.laps == 1 then
+                    say(pid, string.format("one more lap and your best counts for the board (minimum %d)", cfg.minLaps))
                 end
-                saveBoard()
             end
         else
             MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
         end
+        r.resets = 0; r.invalid = false
         if cfg.finish then
             r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.nextCp = 1   -- course done: back to the start to go again
         else
@@ -324,7 +359,7 @@ function onChatMessage(pid, name, msg)
         say(pid, "/lap race [seconds]  - countdown for everyone sitting in the start bubble (or honk in the bubble)")
         say(pid, "/lap autostart on|off | set countdown <s>")
         say(pid, "/lap list | clear | undo | reset | debug on|off | markers on|off | announce on|off")
-        say(pid, "/lap set minLapMs <n> | set defaultRadius <n> | set markerAlpha 0-255")
+        say(pid, "/lap set minLapMs <n> | set defaultRadius <n> | set markerAlpha 0-255 | set minLaps 2 | set pointsMinDrivers 3")
     elseif cmd == "mark" then
         -- ask the client for its current vehicle position; reply comes to onPosReply
         MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]), what = "mark" })
@@ -355,11 +390,14 @@ function onChatMessage(pid, name, msg)
         cfg.lineStyle = args[3]; saveCfg(); sendCfg(-1); say(pid, "start line style " .. args[3])
     elseif cmd == "times" then
         local list = sortedBoard()
-        if #list == 0 then say(pid, "no laps yet") end
+        if #list == 0 then say(pid, string.format("no times on the board yet (a driver needs %d laps first)", cfg.minLaps)) end
+        local showPoints = #list >= cfg.pointsMinDrivers
+        if #list > 0 and not showPoints then say(pid, string.format("points appear once %d drivers have times (%d so far)", cfg.pointsMinDrivers, #list)) end
         for i, it in ipairs(list) do
             if i > 10 then break end
-            say(pid, string.format("%d. %s  %s  %s  (%d laps, @%d km/h)", i, it.name, fmt(it.e.bestMs),
-                                   sectorsText(it.e.sectors or {}), it.e.laps or 0, it.e.kph or 0))
+            local pts = showPoints and string.format("  %d pts", pointsFor(it.e.bestMs, list[1].e.bestMs)) or ""
+            say(pid, string.format("%d. %s  %s  %s  (%d laps, @%d km/h, resets %d)%s", i, it.name, fmt(it.e.bestMs),
+                                   sectorsText(it.e.sectors or {}), it.e.laps or 0, it.e.kph or 0, it.e.resets or 0, pts))
         end
     elseif cmd == "announce" then
         cfg.announceSplits = (args[3] == "on"); saveCfg(); say(pid, "sector announcements to everyone: " .. tostring(cfg.announceSplits))
@@ -400,6 +438,7 @@ function onInit()
     MP.RegisterEvent("kkLap_posreply",     "onPosReply")
     MP.RegisterEvent("kkLap_getcfg",       "onGetCfg")
     MP.RegisterEvent("kkLap_arm",          "onArm")
+    MP.RegisterEvent("kkLap_invalid",      "onInvalid")
     MP.RegisterEvent("kkLap_jump",         "onJump")
     MP.RegisterEvent("kkLap_tick",         "onTick")
     log("I", PLUGIN .. " v" .. VERSION .. " loaded on " .. MP.GetOSName())
