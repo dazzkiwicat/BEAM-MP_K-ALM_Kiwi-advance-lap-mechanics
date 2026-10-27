@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.18 pushed (start bubble always restarts, everyone-honks start rule, race numbers), NOT yet live. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 pushed (rules window, admin gate, music stops on level exit; plus v0.17/0.18 start-bubble and everyone-honks rules), NOT yet live. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -377,6 +377,24 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   still starts regardless. Roster cleared on every config push; clients re-report.
   NEXT (one step): upload v0.18 (main.lua + zip, delete old zip), restart, two cars in the
   bubble: first honk should print "ready (1 of 2)", second honk starts the countdown.
+
+- 27/10: Darren: needs its own UI window for rules + player commands; config is admin only.
+  Also: music keeps playing after leaving the level. -> v0.19, bench 97:
+  * rules window: ui_imgui (the binding BeamMP's MPDebug.lua draws from onUpdate: im.Begin,
+    im.Text, im.Button, im.End, cloned source), whole draw in a pcall so a binding mismatch
+    closes the window instead of killing the frame. Opens on join (cfg.rulesOnJoin) and
+    toggles with /rules; Close button. Shows cfg.rules lines (defaults written from the
+    rules we built; /rules add, /rules clear), the player commands, and the admin commands
+    only for admins. UNCHECKED: im.SetNextWindowSize/Cond_FirstUseEver and im.TextWrapped
+    names in this build (pcall covers it; if the window never shows, kkLap.log says
+    "rules window failed to draw").
+  * admin gate: cfg.admins (names). Empty = everyone (bootstrap); first /admin add locks it.
+    ADMIN_ONLY set covers every command that changes anything. /help is split.
+  * music: onClientEndMission now also stops the music (it only stopped the line before).
+    If the playOnce fallback was what ran, there is no stop; kkLap.log "createSource failed"
+    would say so.
+  NEXT (one step): upload v0.19 (main.lua + zip, delete old zip), restart, join: the rules
+  window should pop up. Then "/admin add <your in-game name>" to lock config to you.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

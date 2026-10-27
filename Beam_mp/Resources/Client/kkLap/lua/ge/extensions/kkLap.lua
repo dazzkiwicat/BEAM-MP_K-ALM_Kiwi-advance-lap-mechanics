@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.18'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.19'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -324,6 +324,43 @@ function M.onVehReset(vid)
     end
 end
 
+-- ----------------------------------------------------- rules window (v0.19)
+-- Dear ImGui through the game's ui_imgui, the same binding BeamMP's own MPDebug.lua draws
+-- its windows with (im.Begin / im.Text / im.Button / im.End from onUpdate). Opened by the
+-- server on join and by /rules; the Close button or /rules again shuts it.
+local rules = { open = false, lines = {}, player = {}, admin = nil }
+local function onRules(data)
+    local d = jsonDecode(data)
+    if not d then return end
+    rules.lines, rules.player, rules.admin = d.rules or {}, d.player or {}, d.admin
+    if d.open == nil then rules.open = not rules.open else rules.open = d.open end
+end
+local function drawRules()
+    if not rules.open then return end
+    local im = ui_imgui
+    if not im then return end
+    local ok = pcall(function()
+        im.SetNextWindowSize(im.ImVec2(560, 0), im.Cond_FirstUseEver)
+        im.SetNextWindowBgAlpha(0.85)
+        im.Begin('kkLap  v' .. M.VERSION .. '  -  rules and commands')
+        im.TextColored(im.ImVec4(0.3, 1.0, 0.3, 1.0), 'RULES')
+        for _, l in ipairs(rules.lines) do im.TextWrapped('- ' .. l) end
+        im.Separator()
+        im.TextColored(im.ImVec4(0.3, 0.8, 1.0, 1.0), 'COMMANDS (type in chat)')
+        for _, l in ipairs(rules.player) do im.TextWrapped(l) end
+        if rules.admin then
+            im.Separator()
+            im.TextColored(im.ImVec4(1.0, 0.7, 0.3, 1.0), 'ADMIN')
+            for _, l in ipairs(rules.admin) do im.TextWrapped(l) end
+        end
+        im.Separator()
+        if im.Button('Close   (or type /rules)') then rules.open = false end
+        im.End()
+    end)
+    if not ok then rules.open = false; dbg('rules window failed to draw, imgui call mismatch') end
+end
+M.rulesState = rules      -- for the bench
+
 -- ----------------------------------------------------- per-frame check
 local function onUpdate(dt)
     -- every 5 s, when debug is on, prove the loop is alive and show what it sees.
@@ -353,6 +390,7 @@ local function onUpdate(dt)
     end
 
     musicTick(dt)
+    drawRules()
     if pending then
         pending.t = pending.t + dt
         if pending.t > 1 then dbg('no surface report from the car in 1 s'); sendPosReply(false, 'UNKNOWN') end
@@ -575,6 +613,7 @@ local function onExtensionLoaded()
     AddEventHandler('kkLap_count',  onCount)
     AddEventHandler('kkLap_go',     onGo)
     AddEventHandler('kkLap_music',  onMusic)
+    AddEventHandler('kkLap_rules',  onRules)
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do loadVE(vid) end   -- cars that spawned before we loaded
     dbg('extension v' .. M.VERSION .. ' loaded, markers ' .. (draw.ok and 'available' or 'NOT available') .. ', asking server for config')
     TriggerServerEvent('kkLap_getcfg', '')   -- usually too early to arrive; onPlayerJoin on the server covers it (26/10)
@@ -585,6 +624,6 @@ M.onUpdate          = onUpdate
 M.onPreRender       = onPreRender
 M.onVehicleSpawned  = onVehicleSpawned
 M.onExtensionUnloaded = function() removeLine(); musicStop() end
-M.onClientEndMission  = removeLine     -- BeamNG: leaving the level; the line would be gone anyway
+M.onClientEndMission  = function() removeLine(); musicStop() end   -- BeamNG: leaving the level: line gone anyway, music must stop (Darren, 27/10)
 M.myPid             = nil     -- our player id, stamped by the server on the config it sends us
 return M

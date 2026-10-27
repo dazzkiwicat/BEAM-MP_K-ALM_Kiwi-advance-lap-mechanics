@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.18"   -- same number as the client zip it was built with
+local VERSION  = "0.19"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -48,6 +48,15 @@ local defaultCfg = {
     minLaps      = 2,        -- laps a driver must complete before any lap of theirs counts for the board (v0.10)
     pointsMinDrivers = 3,    -- points only show once this many drivers are on the board
     djText       = "DJ set is in the Discord voice channel: ask in Discord for the invite",   -- /dj prints this (v0.13)
+    admins       = {},       -- player names allowed to change anything. Empty = everyone (first /admin add locks it) (v0.19)
+    rulesOnJoin  = true,     -- open the rules window when a player joins
+    rules        = {         -- shown in the in-game rules window, /rules add <text> | /rules clear
+        "Park in the start bubble and honk once. Everyone in there must honk, then 5-4-3-2-1-GO.",
+        "Arrive after GO? Your own honk starts your own countdown.",
+        "Physics reset (Insert) is allowed and counted. Recover / teleport = that lap does not count.",
+        "Back in the start bubble any time = fresh start, partial lap dropped.",
+        "Two laps minimum before your best goes on the board. Points once 3 drivers have times.",
+    },
     musicVolume  = 0.5,      -- /lap music <name> plays art/sound/kkLap/<name>.ogg from the zip on every client (v0.11)
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
@@ -395,10 +404,35 @@ end
 
 -- ---------------------------------------------------------------- chat commands
 -- Return 1 swallows the message so it doesn't show in chat.
+local function isAdmin(pid)
+    if #cfg.admins == 0 then return true end        -- nobody set yet: open (bootstrap)
+    local name = MP.GetPlayerName(pid) or ""
+    for _, a in ipairs(cfg.admins) do if a == name then return true end end
+    return false
+end
+local ADMIN_ONLY = { mark = true, start = true, finish = true, clear = true, undo = true, reset = true, debug = true,
+                     markers = true, announce = true, autostart = true, set = true, line = true, music = true, race = true, admin = true }
+local PLAYER_HELP = {
+    "/rules   - this window     /times - the board     /help - commands",
+    "/dj      - where the Discord DJ set is",
+    "Honk in the start bubble to start. Everything else is admin only.",
+}
+local ADMIN_HELP = {
+    "/mark [r] | /start [r] | /finish [r] | /finish same | /undo | /clear | /list",
+    "/race [sec] | /reset | /autostart on|off | /announce on|off | /markers on|off",
+    "/line paint|draw | /music <file> [vol] [once] | /music stop | /dj <text>",
+    "/rules add <text> | /rules clear | /admin add|remove <name> | /admin list",
+    "/set minLapMs | defaultRadius | markerAlpha | lineWidth | countdown | minLaps | pointsMinDrivers",
+}
+local function sendRules(pid, open)
+    MP.TriggerClientEventJson(pid, "kkLap_rules", { open = open, rules = cfg.rules, player = PLAYER_HELP,
+                                                    admin = isAdmin(pid) and ADMIN_HELP or nil })
+end
+
 -- the words that work on their own, "/mark" = "/lap mark"
 SHORT = { help = true, mark = true, start = true, finish = true, list = true, clear = true, undo = true,
           reset = true, debug = true, markers = true, announce = true, autostart = true, race = true,
-          times = true, line = true, music = true, set = true, lap = true, dj = true }
+          times = true, line = true, music = true, set = true, lap = true, dj = true, rules = true, admin = true }
 
 function onChatMessage(pid, name, msg)
     -- v0.12: "/mark" works as well as "/lap mark". Any other "/word" is left alone for
@@ -413,8 +447,19 @@ function onChatMessage(pid, name, msg)
         args[2] = short
     end
     local cmd = args[2] or "help"
+    if ADMIN_ONLY[cmd] and not isAdmin(pid) then
+        say(pid, "admin only. Admins: " .. table.concat(cfg.admins, ", "))
+        return 1
+    end
+    if cmd == "dj" and args[3] and not isAdmin(pid) then say(pid, "admin only"); return 1 end
 
     if cmd == "help" then
+        for _, l in ipairs(PLAYER_HELP) do say(pid, l) end
+        if isAdmin(pid) then
+            for _, l in ipairs(ADMIN_HELP) do say(pid, l) end
+            if #cfg.admins == 0 then say(pid, "NO ADMINS SET: everyone can change things. /admin add <name> locks it.") end
+        end
+    elseif cmd == "oldhelp" then
         say(pid, "every command works without the lap word too: /mark, /start, /times, /race ...")
         say(pid, "/lap mark [radius]  - checkpoint at your car (1st = start/finish)")
         say(pid, "/lap start [radius]  - move the start line here, checkpoints kept")
@@ -455,6 +500,19 @@ function onChatMessage(pid, name, msg)
         cfg.autoStart = (args[3] == "on"); saveCfg(); say(pid, "autostart " .. tostring(cfg.autoStart))
     elseif cmd == "line" and (args[3] == "paint" or args[3] == "draw") then
         cfg.lineStyle = args[3]; saveCfg(); sendCfg(-1); say(pid, "start line style " .. args[3])
+    elseif cmd == "rules" and args[3] == "add" and args[4] then
+        table.insert(cfg.rules, table.concat(args, " ", 4)); saveCfg(); say(pid, "rule added (" .. #cfg.rules .. ")")
+    elseif cmd == "rules" and args[3] == "clear" then
+        cfg.rules = {}; saveCfg(); say(pid, "rules cleared")
+    elseif cmd == "rules" then
+        sendRules(pid, nil)                  -- nil = toggle on the client
+    elseif cmd == "admin" and args[3] == "add" and args[4] then
+        table.insert(cfg.admins, args[4]); saveCfg(); say(-1, args[4] .. " is now a kkLap admin (by " .. name .. ")")
+    elseif cmd == "admin" and args[3] == "remove" and args[4] then
+        for i = #cfg.admins, 1, -1 do if cfg.admins[i] == args[4] then table.remove(cfg.admins, i) end end
+        saveCfg(); say(pid, "admins: " .. table.concat(cfg.admins, ", "))
+    elseif cmd == "admin" then
+        say(pid, "admins: " .. (#cfg.admins > 0 and table.concat(cfg.admins, ", ") or "none set (everyone)"))
     elseif cmd == "dj" and args[3] then
         cfg.djText = table.concat(args, " ", 3); saveCfg(); say(-1, "[DJ] " .. cfg.djText)
     elseif cmd == "dj" then
@@ -503,6 +561,7 @@ end
 -- ---------------------------------------------------------------- lifecycle
 function onPlayerJoin(pid)
     sendCfg(pid)                          -- late joiner gets the current checkpoints
+    if cfg.rulesOnJoin then sendRules(pid, true) end
 end
 function onPlayerDisconnect(pid)
     for k in pairs(bubble) do

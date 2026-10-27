@@ -145,6 +145,7 @@ M.onExtensionLoaded()                            # client asks server for config
 
 # ------------------------------------------------------------------ helpers
 def chat(msg): return S.globals()[s_handlers["onChatMessage"]](1, "Darren", msg)
+def chat_as(pid, name, msg): return S.globals()[s_handlers["onChatMessage"]](pid, name, msg)
 def tick(dt_s=0.05, ms=None):
     """advance the clock and run one client frame"""
     clock_ms[0] += int((ms if ms is not None else dt_s*1000))
@@ -396,12 +397,32 @@ mark = len(chat_out)
 check(chat("/times") == 1 and len(chat_out) > mark, "/times works like /lap times (answers, and swallows the message)")
 check(chat("/foo bar") is None and chat("hello /lap") is None, "other slash commands and plain chat are left alone")
 mark = len(chat_out); chat("/help")
-check(any("without the lap word" in m for _, m in chat_out[mark:]), "/help is ours")
+check(any("/rules" in m for _, m in chat_out[mark:]), "/help is ours")
 mark = len(chat_out); chat("/set minLapMs 4000")
 check(any("minLapMs = 4000" in m for _, m in chat_out[mark:]), "/set carries its arguments through")
 chat("/set minLapMs 5000")
 mark = len(chat_out); chat("/dj Voice channel #kiwi-dj, link in #announcements"); chat("/dj")
 check(sum(1 for pid, m in chat_out[mark:] if pid == -1 and "[DJ] Voice channel #kiwi-dj" in m) == 2, "/dj sets and repeats the Discord pointer to everyone")
+
+# ------------------------------------------------------------------ scenario 12: rules window and admin gate
+mark = len(client_log)
+rs = M.rulesState
+chat("/rules")
+check(rs.open == True and len(list(rs.lines.values())) >= 5 and rs.admin is not None, "/rules opens the window with the rules, and admin lines for an admin (nobody set yet = everyone)")
+for _ in range(3): tick()                                     # drawRules runs: no imgui here, must not crash
+chat("/rules")
+check(rs.open == False, "/rules again closes it")
+chat("/admin add Darren")
+check(json.load(open(cfgfile))["admins"] == ["Darren"], "/admin add locks the admin list to that name")
+mark = len(chat_out)
+check(chat_as(2, "Bob", "/mark") == 1 and any(pid == 2 and "admin only" in m for pid, m in chat_out[mark:]), "non-admin cannot mark")
+check(chat_as(2, "Bob", "/times") == 1 and not any(pid == 2 and "admin only" in m for pid, m in chat_out[mark+1:]), "non-admin can read the board")
+check(chat_as(2, "Bob", "/dj") == 1 and chat_as(2, "Bob", "/dj hack") == 1 and any(pid == 2 and m == "[LAP] admin only" for pid, m in chat_out[mark:]), "non-admin can ask where the DJ is but not change it")
+chat("/rules add No ramming on the start straight")
+check(any("No ramming" in l for l in json.load(open(cfgfile))["rules"]), "/rules add stores a rule")
+S.globals()[s_handlers["onPlayerJoin"]](1)
+check(rs.open == True and any("No ramming" in l for l in rs.lines.values()), "joining opens the rules window with the new rule")
+chat("/rules")
 
 # ------------------------------------------------------------------ scenario 8: vehicle-side file, in its own VM, reports the horn edge once
 check(any("loadModulesInDirectory('lua/vehicle/extensions/kkLap')" in c for _, c in ve_cmds), "GE side loads kkLapVE into the cars")

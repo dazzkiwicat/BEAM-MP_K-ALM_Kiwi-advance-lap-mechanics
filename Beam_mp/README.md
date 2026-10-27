@@ -26,6 +26,18 @@ When uploading a new version, delete the old kkLap_v*.zip from the server, or pl
     python3 Beam_mp/bench/bench.py
 Runs the real server and client Lua against each other with fake BeamMP calls and a fake car.
 
+## Who may do what (v0.19)
+Players: /rules (the in-game window), /times, /help, /dj, and honking. Everything that
+changes the track or the settings is admin only. Admins are player names in config.json;
+while the list is empty everyone is admin, and the first "/admin add <name>" locks it.
+/admin list | add <name> | remove <name>.
+
+## The rules window (v0.19)
+A window inside the game (the game's own ImGui, same as BeamMP's debug windows) opens on
+join and on /rules, with the rules text, the player commands, and the admin commands if you
+are one. "/rules add <text>" adds a rule line, "/rules clear" empties them, "/set rulesOnJoin"
+is not a number so edit config.json to turn the join pop-up off.
+
 ## In game
 Every command works with or without the lap word: /mark is /lap mark, /times is /lap times (v0.12).
 Other plugins' slash commands are left alone.
@@ -43,7 +55,7 @@ Other plugins' slash commands are left alone.
     /lap line paint|draw  start/finish line: painted on the road, or flat drawn chequer (v0.8.0)
     /lap set lineWidth 10   metres across the road
     /lap music <name> [0-10] [once|<sec>]  play art/sound/kkLap/<name>(.ogg, or name.mp3) on every client, on repeat; >1 boosts
-    /lap music stop
+    /lap music stop    (music also stops by itself when you leave the level, v0.19)
     /dj [text]         tell everyone where the Discord DJ set is (text is remembered) (v0.13)
     /lap times         best lap per player with sector times, resets and points, top 10
     /lap set minLaps 2        laps a driver needs before their best goes on the board (v0.10)
