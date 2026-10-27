@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.16'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.17'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -169,7 +169,7 @@ function M.onHorn(vid)
     local veh, cp1 = be:getObjectByID(vid), cfg.checkpoints[1]
     local s = state[vid]
     if not (veh and cp1 and s) then return end
-    if counting or s.nextCp > 2 or not insideCp(veh, cp1) then return end
+    if counting or not insideCp(veh, cp1) then return end       -- any time, mid-lap too: the start bubble always works (Darren, 27/10)
     TriggerServerEvent('kkLap_arm', jsonEncode({ vid = vid }))
     dbg(string.format('vid %d honked on the line, asked for a countdown', vid))
 end
@@ -401,6 +401,23 @@ local function onUpdate(dt)
                 s.jumpSent = true
                 TriggerServerEvent('kkLap_jump', jsonEncode({ vid = vid }))
             end
+
+            -- Darren's rule (27/10): driving back into the START bubble always works, whatever
+            -- state you were in: the partial lap is dropped and timing starts fresh. Only when
+            -- the start is NOT the thing you were heading for (that case is the normal crossing).
+            local inStart = insideCp(veh, cfg.checkpoints[1])
+            if inStart and not s.inStart and s.nextCp ~= 1 then
+                local vx, vy, vz = veh:getVelocityXYZ()
+                TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = 1, restart = true,
+                    kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6, pos = { x = p.x, y = p.y, z = p.z } }))
+                dbg(string.format('vid %d back in the start bubble: partial lap dropped, restart', vid))
+                s.nextCp = (n > 1) and 2 or 1
+                s.started = true; s.invalid = false; s.physResets = 0
+                s.flashCp = 1; s.flashT = 1.5
+                cp = tgt[s.nextCp]
+                inside = insideCp(veh, cp); s.inside = inside    -- re-aim at the new target before the edge test below
+            end
+            s.inStart = inStart
 
             if inside and not s.inside then
                 -- edge: just entered the sphere. Report once.

@@ -261,6 +261,24 @@ check(M.cpStyle(1, st(nextCp=2, started=True, flashCp=1, flashT=0.0), 2) == "don
 check(M.cpStyle(2, st(nextCp=1, started=True, flashCp=2, flashT=0.0), 2) == "done", "heading for the line, every other cp is done")
 check(M.cpStyle(2, st(nextCp=1, started=False, flashCp=None, flashT=0), 2) == "todo", "before the first crossing nothing is done")
 
+# ------------------------------------------------------------------ scenario 2c: back into the start bubble mid-lap = fresh start, always
+# vid 100 has just crossed the line (nextCp 2). It wanders off and comes back to the start without cp2.
+mark_s = len(server_log); mark_c = len(client_log)
+drive(100, [(50, 0, 0), (0, 0, 0)])
+t_restart = clock_ms[0]
+check(any("partial lap dropped, restart" in l for l in client_log[mark_c:]) and any("restart pid=1" in l for l in server_log[mark_s:]),
+      "driving back into the start bubble mid-lap restarts the lap on both sides")
+before = len(laps())
+drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+got = laps()[before:]
+check(len(got) == 1 and got[0]["lapMs"] == clock_ms[0] - t_restart, "the lap after a restart is timed from the restart, not from the first crossing")
+# honk works from that state too (mid-lap, back in the bubble)
+for _ in range(200): tick()
+mark = len(chat_out); positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0.0); tick(); M.onHorn(100)
+check(any(pid == -1 and "race start in" in m for pid, m in chat_out[mark:]), "honk in the bubble arms a countdown whatever state the car was in")
+for _ in range(130): tick()
+velocities[100] = (27.78, 0.0, 0.0)
+
 # ------------------------------------------------------------------ scenario 3: second vehicle on the same client times separately
 # vid 101 jumps sphere to sphere with NO frame outside in between. That is the case
 # the first bench run caught: the inside flag leaked across checkpoints.

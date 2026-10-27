@@ -355,7 +355,17 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   Still UNCHECKED: points display (needs 3 drivers), /finish point-to-point on the real
   server, the stoppable-music path vs playOnce fallback (which one ran: kkLap.log says
   "music playing" either way, look for "createSource failed").
-  NEXT (one step): upload v0.16 whenever convenient. Then whatever Darren wants next.
+- 27/10: BUG live: after a position reset disqualified the lap, going back into the start
+  bubble and honking did nothing. Cause: honk was gated on "before the first sector"
+  (nextCp <= 2) and the client only watched the NEXT target, so re-entering the start
+  mid-lap was invisible. Darren's rule: "it's always got to work for everyone if they start
+  back there regardless, and reset their last lap if only partially completed".
+  -> v0.17, bench 86: the client edge-detects the start bubble separately from the current
+  target; entering it with nextCp ~= 1 sends kkLap_cross{restart=true}: server drops the
+  partial lap, timing starts fresh, "timing started"; honk arms from any state. GO already
+  restarted everyone in the bubble.
+  NEXT (one step): upload v0.17 (main.lua + zip, delete old zip), restart, reproduce: mid-lap
+  R recover, drive back to the start, honk. Expect the countdown.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.16"   -- same number as the client zip it was built with
+local VERSION  = "0.17"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -207,6 +207,16 @@ function onCross(pid, data)
     local n   = #cfg.checkpoints + (cfg.finish and 1 or 0)   -- targets: checkpoints, then the finish line if separate
 
     dbg(string.format("cross pid=%d vid=%s cp=%s expecting=%d", pid, tostring(d.vid), tostring(d.cp), r.nextCp))
+
+    if d.cp == 1 and d.restart then
+        -- back in the start bubble mid-lap: the partial lap is dropped, timing starts fresh.
+        -- Always works, for everyone, whatever happened before (Darren's rule, 27/10).
+        dbg(string.format("restart pid=%d vid=%s, partial lap dropped", pid, tostring(d.vid)))
+        MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
+        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false
+        r.nextCp   = (n > 1) and 2 or 1
+        return
+    end
 
     if d.cp == 1 and d.go then
         -- GO start (before the wrong-cp check: a car that rolled into the bubble expects cp2 already): the car was sitting in the bubble at GO. Its lap counts from the GO instant,

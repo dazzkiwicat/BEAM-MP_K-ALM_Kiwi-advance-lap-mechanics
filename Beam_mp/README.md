@@ -122,6 +122,9 @@ docs.beammp.com/beamng/lua-snippets; UNCHECKED whether a fresh freeroam layout a
 them.) Without them nothing breaks: the small top-left toasts still carry everything.
 
 ## Racing together (v0.6.0)
+The start bubble always works: drive back into it at any point, mid-lap, after a reset,
+after a disqualified lap, and the partial lap is dropped and timing starts fresh. A honk
+in there arms the countdown from any state too (v0.17).
 Everyone parks in the start bubble. Anyone honks. Chat and screen count 5, 4, 3, 2, 1, GO.
 At GO every car still inside the bubble starts its lap from the same server instant, so the
 times compare. A car that was on the line and leaves the bubble before GO gets
