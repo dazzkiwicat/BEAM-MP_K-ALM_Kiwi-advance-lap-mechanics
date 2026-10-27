@@ -466,6 +466,11 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
 Darren has run a BeamMP server for a few years and wants this built for the community,
 with more people involved. Keep the README readable by a server owner who doesn't code.
 
+27/10: MIT licence added at the repo root (LICENSE), Darren picked it from the onboarding
+list ("2 of licence"). Copyright line names Darren (Dazzcat) and the kkLap contributors.
+Still on the list, not started: CONTRIBUTING.md, five starter issues, a GitHub Release
+per version with both zips, a draft forum/Discord post, root README front door.
+
 ## Open questions for Darren
 - Paste the exact error line from the old attempt's debug when you find it.
 - Is the test server's spawn limit set to 2 or more for split-screen?

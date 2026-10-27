@@ -188,3 +188,7 @@ BeamMP: TriggerServerEvent, AddEventHandler, MPVehicleGE.getOwnMap.
 BeamNG game Lua: be:getObjectByID, be:getPlayerVehicle, veh:getPosition, veh:getVelocityXYZ, veh:getID, guihooks.trigger,
 log, jsonEncode/jsonDecode, ffi.C.BNG_DBG_DRAW_Sphere, ffi.C.BNG_DBG_DRAW_TextAdvanced, color().
 Server file is 100% BeamMP server API (MP.*, Util.Json*).
+
+## Licence
+MIT, see LICENSE at the repo root. Use it, change it, ship it on your own server; keep the
+copyright line. The music file is yours, not ours, and never lives in this repo.
