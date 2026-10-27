@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.8.0"   -- same number as the client zip it was built with
+local VERSION  = "0.9.0"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -48,6 +48,7 @@ local defaultCfg = {
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
     checkpoints  = {},
+    finish       = nil,      -- a separate finish line {x,y,z,r,hx,hy} = point-to-point; nil = finish is the start (loop)
 }
 cfg = nil   -- global on purpose: other kkLap files (if any) can see it
 
@@ -91,7 +92,7 @@ end
 -- key = pid .. ":" .. vid   (split-screen = one pid, two vids, so vid is essential)
 local runs  = {}
 local timer = MP.CreateTimer()          -- server clock, seconds as float
-local function nowMs() return math.floor(timer:GetCurrent() * 1000) end
+local function nowMs() return math.floor(timer:GetCurrent() * 1000 + 0.5) end   -- round, not floor: 59.3 s * 1000 is 59299.999 in floating point (bench, 27/10)
 
 local function fmt(ms)
     local m = math.floor(ms / 60000)
@@ -178,7 +179,7 @@ function onCross(pid, data)
     local r   = runs[key] or { nextCp = 1, lapStart = nil, lastCp = nil, best = nil, laps = 0, sectors = {} }
     runs[key] = r
     local t   = nowMs()
-    local n   = #cfg.checkpoints
+    local n   = #cfg.checkpoints + (cfg.finish and 1 or 0)   -- targets: checkpoints, then the finish line if separate
 
     dbg(string.format("cross pid=%d vid=%s cp=%s expecting=%d", pid, tostring(d.vid), tostring(d.cp), r.nextCp))
 
@@ -199,8 +200,17 @@ function onCross(pid, data)
         return
     end
 
-    if d.cp == 1 then
-        -- start/finish line
+    if cfg.finish and d.cp == 1 then
+        -- point-to-point: the start only starts. Crossing it mid-run restarts the run.
+        if r.lapStart then dbg("run restarted at the start line") end
+        MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
+        r.lapStart = t; r.lastCp = t; r.sectors = {}
+        r.nextCp   = (n > 1) and 2 or 1
+        return
+    end
+
+    if d.cp == 1 or (cfg.finish and d.cp == n) then
+        -- start/finish line (loop), or the separate finish line (point-to-point)
         if r.lapStart then
             local lap = t - r.lapStart
             table.insert(r.sectors, t - r.lastCp)            -- last sector: previous cp -> finish line
@@ -229,10 +239,14 @@ function onCross(pid, data)
         else
             MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
         end
-        r.lapStart = t
-        r.lastCp   = t
-        r.sectors  = {}
-        r.nextCp   = (n > 1) and 2 or 1
+        if cfg.finish then
+            r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.nextCp = 1   -- course done: back to the start to go again
+        else
+            r.lapStart = t
+            r.lastCp   = t
+            r.sectors  = {}
+            r.nextCp   = (n > 1) and 2 or 1
+        end
     else
         -- a split: sector = time since the previous checkpoint, split = time since the line
         local sector = t - r.lastCp
@@ -259,28 +273,38 @@ function onGetCfg(pid, data)
 end
 
 -- client answers "where is vehicle X" for /lap mark
+-- the client answers /lap mark, /lap start and /lap finish here, echoing "what" it was asked for
 function onPosReply(pid, data)
-    do
-        local ok, d = pcall(Util.JsonDecode, data)
-        if ok and type(d) == "table" and #cfg.checkpoints == 0 then
-            -- first mark = start/finish: only on tarseal (Darren's rule, 27/10)
-            if not d.sealed then
-                say(pid, "start/finish must be on tarseal. Wheels are on: " .. tostring(d.surface))
-                log("I", "start mark refused, surface " .. tostring(d.surface))
-                return
-            end
-        end
-    end
     local ok, d = pcall(Util.JsonDecode, data)
-    if not ok or not d.pos then log("E", "bad pos reply: " .. tostring(data)); return end
+    if not ok or type(d) ~= "table" or not d.pos then log("E", "bad pos reply: " .. tostring(data)); return end
+    local what = d.what or "mark"
+    if what == "mark" and #cfg.checkpoints == 0 then what = "start" end   -- first mark IS the start
     local cp = { x = d.pos.x, y = d.pos.y, z = d.pos.z, r = d.r or cfg.defaultRadius }
-    if #cfg.checkpoints == 0 and type(d.heading) == "table" then
-        cp.hx, cp.hy = tonumber(d.heading.x) or 0, tonumber(d.heading.y) or 1   -- start line runs across this
+    if what == "start" or what == "finish" then
+        -- lines: only on tarseal (Darren's rule, 27/10), and they need the car's heading to run across the road
+        if not d.sealed then
+            say(pid, what .. " must be on tarseal. Wheels are on: " .. tostring(d.surface))
+            log("I", what .. " mark refused, surface " .. tostring(d.surface))
+            return
+        end
+        if type(d.heading) == "table" then cp.hx, cp.hy = tonumber(d.heading.x) or 0, tonumber(d.heading.y) or 1 end
         cp.surface = d.surface
     end
-    table.insert(cfg.checkpoints, cp)
-    saveCfg(); sendCfg(-1)
-    say(pid, string.format("checkpoint %d marked at %.1f %.1f %.1f r=%.1f", #cfg.checkpoints, cp.x, cp.y, cp.z, cp.r))
+    if what == "start" then
+        local old = cfg.checkpoints[1]
+        if old and not d.r then cp.r = old.r end           -- keep the radius unless a new one was given
+        cfg.checkpoints[1] = cp                            -- replaced in place: every other checkpoint stays
+        runs = {}; saveCfg(); sendCfg(-1)
+        say(pid, string.format("start line set at %.1f %.1f %.1f r=%.1f (%d checkpoints kept)", cp.x, cp.y, cp.z, cp.r, #cfg.checkpoints - 1))
+    elseif what == "finish" then
+        cfg.finish = cp
+        runs = {}; saveCfg(); sendCfg(-1)
+        say(pid, string.format("finish line set at %.1f %.1f %.1f r=%.1f: point-to-point course, start no longer finishes a lap", cp.x, cp.y, cp.z, cp.r))
+    else
+        table.insert(cfg.checkpoints, cp)
+        saveCfg(); sendCfg(-1)
+        say(pid, string.format("checkpoint %d marked at %.1f %.1f %.1f r=%.1f", #cfg.checkpoints, cp.x, cp.y, cp.z, cp.r))
+    end
 end
 
 -- ---------------------------------------------------------------- chat commands
@@ -293,6 +317,8 @@ function onChatMessage(pid, name, msg)
 
     if cmd == "help" then
         say(pid, "/lap mark [radius]  - checkpoint at your car (1st = start/finish)")
+        say(pid, "/lap start [radius]  - move the start line here, checkpoints kept")
+        say(pid, "/lap finish [radius] | finish same  - separate finish line here (point-to-point), or back to a loop")
         say(pid, "/lap times  - best lap per player, with sectors")
         say(pid, "/lap line paint|draw | set lineWidth <m>  - the start/finish line look")
         say(pid, "/lap race [seconds]  - countdown for everyone sitting in the start bubble (or honk in the bubble)")
@@ -301,14 +327,21 @@ function onChatMessage(pid, name, msg)
         say(pid, "/lap set minLapMs <n> | set defaultRadius <n> | set markerAlpha 0-255")
     elseif cmd == "mark" then
         -- ask the client for its current vehicle position; reply comes to onPosReply
-        MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]) })
+        MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]), what = "mark" })
+    elseif cmd == "start" then
+        MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]), what = "start" })
+    elseif cmd == "finish" and args[3] == "same" then
+        cfg.finish = nil; runs = {}; saveCfg(); sendCfg(-1); say(pid, "finish line removed: start line is the finish again (loop)")
+    elseif cmd == "finish" then
+        MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]), what = "finish" })
     elseif cmd == "list" then
         if #cfg.checkpoints == 0 then say(pid, "no checkpoints") end
+        if cfg.finish then say(pid, string.format("finish: %.1f %.1f %.1f r=%.1f (point-to-point)", cfg.finish.x, cfg.finish.y, cfg.finish.z, cfg.finish.r)) end
         for i, c in ipairs(cfg.checkpoints) do
             say(pid, string.format("%d: %.1f %.1f %.1f r=%.1f", i, c.x, c.y, c.z, c.r))
         end
     elseif cmd == "clear" then
-        cfg.checkpoints = {}; runs = {}; board = {}; saveCfg(); saveBoard(); sendCfg(-1); say(pid, "checkpoints cleared, best times wiped (laps.log keeps every lap)")
+        cfg.checkpoints = {}; cfg.finish = nil; runs = {}; board = {}; saveCfg(); saveBoard(); sendCfg(-1); say(pid, "checkpoints and finish cleared, best times wiped (laps.log keeps every lap)")
     elseif cmd == "undo" then
         table.remove(cfg.checkpoints); runs = {}; saveCfg(); sendCfg(-1); say(pid, "last checkpoint removed, " .. #cfg.checkpoints .. " left")
     elseif cmd == "reset" then

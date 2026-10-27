@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.8.0 (tarseal-only start, painted line across the road, ring removed) bench-passed 54 checks, NOT yet live. Next move: upload v0.8.0, re-mark the start on tarseal. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.9.0 (/lap start moves the line in place, /lap finish point-to-point, tarseal-only lines painted across the road, ring removed, ms clock rounding fix) bench-passed 61 checks, NOT yet live. Next move: upload v0.9.0, /lap start on tarseal. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -243,6 +243,23 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   NEXT (one step): upload v0.8.0 (main.lua + zip, delete old zip), restart, /lap clear, park
   on the tarseal start, /lap mark. Expect the chat line to accept and a chequered line across
   the road. Then try /lap mark on grass: expect the refusal with the wheel list.
+
+- 27/10: Darren: "/lap start and /lap finish, both locked together like in this case. If I
+  edit the start line now I have to redo all the checkpoints, right?" Yes, he was right:
+  cp1 was only ever the first /lap mark, so moving it meant /lap clear. Also: "keep the honk
+  mechanic". -> v0.9.0, bench 61 checks: /lap start replaces checkpoint 1 in place (radius
+  kept unless given), nothing else touched; /lap finish stores cfg.finish = a separate line
+  (tarseal + heading, own chequered line, label FINISH, start label becomes START); course
+  becomes point-to-point: start only starts, finish ends the run, back to start to go
+  again; /lap finish same = loop again. Client targets list = checkpoints + finish. Honk
+  untouched: it keys off checkpoint 1, which is still the start in both modes.
+  Bench caught a real one: the server ms clock used floor(seconds*1000), and 59.3*1000 is
+  59299.999 in floating point, so a lap could read 1 ms short. Now rounds. Would have
+  shown live as laps 1 ms off between players at the same GO.
+  v0.8.0 never uploaded; go straight to v0.9.0.
+  NEXT (one step): upload v0.9.0 (main.lua + zip, delete the old zip), restart, /lap clear,
+  park on tarseal, /lap start, then /lap mark round the course, drive a lap. Then test
+  /lap finish somewhere and a run start->finish; then /lap finish same.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

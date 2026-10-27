@@ -188,7 +188,7 @@ if not cfg["checkpoints"]: cfg["checkpoints"] = [{"r": None}, {"r": None}]
 check(len(cfg["checkpoints"]) == 2, "two checkpoints saved to config.json")
 check(cfg["checkpoints"][1]["r"] == 10, "/lap mark 10 sets radius 10")
 check(cfg["checkpoints"][0].get("hx") == 1.0 and cfg["checkpoints"][0].get("surface", "").startswith("FL=ASPHALT"), "start checkpoint stores the car's heading and surface")
-check(any("start line drawn as 20 flat cells" in l or "start line painted" in l for l in client_log), "client builds the start line from the config (paint, or 20 flat cells without a game)")
+check(any("start line drawn as flat cells, total 20" in l or "start line painted" in l for l in client_log), "client builds the start line from the config (paint, or 20 flat cells without a game)")
 check(cfg["checkpoints"][0]["r"] == cfg["defaultRadius"], "/lap mark uses defaultRadius")
 check(any("checkpoint 2 marked" in m for _, m in chat_out), "chat confirms the mark")
 
@@ -300,6 +300,32 @@ velocities[100] = (10.0, 0.0, 0.0); positions[100] = (20, 0, 0)   # drives off t
 for _ in range(5): tick()
 check(any(pid == -1 and "jumped the start" in m for pid, m in chat_out[mark_chat:]), "driving off during the countdown is announced as a jump start")
 for _ in range(120): tick()                                   # let that countdown finish
+
+# ------------------------------------------------------------------ scenario 9: /lap start moves the line, /lap finish makes it point-to-point
+for _ in range(200): tick()                                   # clear the GO cooldown
+positions[100] = (5, 0, 0); chat("/lap start"); M.onSurface(100, True, "FL=ASPHALT")
+cfg = json.load(open(cfgfile))
+check(len(cfg["checkpoints"]) == 2 and cfg["checkpoints"][0]["x"] == 5 and cfg["checkpoints"][1]["x"] == 100,
+      "/lap start moves the start line and keeps the other checkpoints")
+positions[100] = (200, 0, 0); chat("/lap finish"); M.onSurface(100, False, "FL=GRASS")
+check(any("finish must be on tarseal" in m for _, m in chat_out[-2:]), "finish on grass is refused")
+chat("/lap finish"); M.onSurface(100, True, "FL=ASPHALT")
+cfg = json.load(open(cfgfile))
+check(cfg.get("finish", {}).get("x") == 200 and cfg["finish"].get("hx") == 1.0, "finish line stored with its heading")
+check(any("finish line painted" in l or "finish line drawn" in l for l in client_log), "client builds a line for the finish too")
+velocities[100] = (27.78, 0.0, 0.0); positions[100] = (50, 0, 0); tick()
+before = len(laps())
+drive(100, [(5, 0, 0)]); t_s = clock_ms[0]                     # start: timing starts
+drive(100, [(50, 0, 0), (100, 0, 0)] + [(150, 0, 0)] * 55)     # cp2 split, cruise past minLapMs
+drive(100, [(200, 0, 0)]); t_f = clock_ms[0]                   # finish: run ends
+got = laps()[before:]
+check(len(got) == 1 and got[0]["lapMs"] == t_f - t_s, "point-to-point run timed from the start line to the finish line")
+drive(100, [(150, 0, 0), (50, 0, 0), (5, 0, 0)])               # back through the start: starts again, no lap
+check(len(laps()) == before + 1, "crossing the start after a finish starts a new run, counts nothing")
+chat("/lap finish same")
+cfg = json.load(open(cfgfile))
+check(cfg.get("finish") is None, "/lap finish same puts the finish back on the start line")
+chat("/lap reset")
 
 # ------------------------------------------------------------------ scenario 8: vehicle-side file, in its own VM, reports the horn edge once
 check(any("loadModulesInDirectory('lua/vehicle/extensions/kkLap')" in c for _, c in ve_cmds), "GE side loads kkLapVE into the cars")

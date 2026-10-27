@@ -14,12 +14,13 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.8.0'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.9.0'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent }
 local counting = false       -- a shared countdown is running (server says so)
 local buildLine, removeLine  -- defined further down, used by onCfg above them
+local tgt      = {}          -- the targets in order: checkpoints, then the separate finish line if there is one
 local lastDbg  = 0
 
 local function dbg(msg)
@@ -86,6 +87,9 @@ local function onCfg(data)
     if cfg.markers == nil then cfg.markers = true end   -- config.json from before v0.4.0
     lapClock.running = false; realtime('')              -- track changed or reset: clock off
     if cfg.lineStyle == nil then cfg.lineStyle = 'paint' end
+    tgt = {}
+    for i, c in ipairs(cfg.checkpoints) do tgt[i] = c end
+    if cfg.finish then tgt[#tgt + 1] = cfg.finish end     -- point-to-point: finish is the last target
     buildLine()
     if draw.ok then buildColours(cfg.markerAlpha) end   -- /lap set markerAlpha takes effect here
     state = {}                                    -- checkpoints changed, start fresh
@@ -190,7 +194,7 @@ local function onGo(data)
             local vx, vy, vz = veh:getVelocityXYZ()
             TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = 1, go = true,
                 kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6 }))
-            s.nextCp  = (#cfg.checkpoints > 1) and 2 or 1
+            s.nextCp  = (#tgt > 1) and 2 or 1
             s.inside  = true                 -- already in cp1: leaving it is not a crossing
             s.started = true
             s.flashCp = 1; s.flashT = 1.5
@@ -213,7 +217,7 @@ local function sendPosReply(sealed, surface)
     if not veh then dbg('getpos: vehicle gone'); return end
     local p = veh:getPosition()
     local h = vec3(veh:getDirectionVector())       -- BeamNG; BeamMP wraps it the same way
-    TriggerServerEvent('kkLap_posreply', jsonEncode({ r = req.r, pos = { x = p.x, y = p.y, z = p.z },
+    TriggerServerEvent('kkLap_posreply', jsonEncode({ r = req.r, what = req.what, pos = { x = p.x, y = p.y, z = p.z },
         heading = { x = h.x, y = h.y }, sealed = sealed, surface = surface }))
     dbg(string.format('pos sent %.1f %.1f %.1f heading %.2f %.2f surface %s sealed=%s', p.x, p.y, p.z, h.x, h.y, surface, tostring(sealed)))
 end
@@ -222,7 +226,7 @@ local function onGetPos(data)
     local d   = jsonDecode(data) or {}
     local veh = be:getPlayerVehicle(0)             -- BeamNG: seat 0's vehicle
     if not veh then dbg('getpos: no player vehicle'); return end
-    pending = { r = d.r, vid = veh:getID(), t = 0 }
+    pending = { r = d.r, what = d.what, vid = veh:getID(), t = 0 }
     veh:queueLuaCommand('kkLapVE.reportSurface()')  -- BeamNG: run this in the car's Lua VM
 end
 
@@ -265,7 +269,7 @@ local function onUpdate(dt)
         if pending.t > 1 then dbg('no surface report from the car in 1 s'); sendPosReply(false, 'UNKNOWN') end
     end
 
-    local n = #cfg.checkpoints
+    local n = #tgt
     if n == 0 then return end
 
     -- BeamMP: table of the vehicles THIS client owns, keyed by game vehicle id.
@@ -275,7 +279,7 @@ local function onUpdate(dt)
         if veh then
             local s  = state[vid] or { nextCp = 1, inside = false, started = false, flashCp = nil, flashT = 0, armed = false }
             state[vid] = s
-            local cp = cfg.checkpoints[s.nextCp]
+            local cp = tgt[s.nextCp]
             local p  = veh:getPosition()
             local dx, dy, dz = p.x - cp.x, p.y - cp.y, p.z - cp.z
             local inside = (dx*dx + dy*dy + dz*dz) <= (cp.r * cp.r)
@@ -297,6 +301,7 @@ local function onUpdate(dt)
                 dbg(string.format('vid %d entered cp %d', vid, s.nextCp))
                 s.started = true                   -- from now on, passed checkpoints are drawn as done
                 s.flashCp = s.nextCp; s.flashT = 1.5   -- and this one flashes white for 1.5 s
+                if cfg.finish and s.nextCp == n then s.started = false end   -- crossed the finish: course done, back to fresh
                 s.nextCp = (s.nextCp % n) + 1
                 inside   = false   -- new target sphere: start outside it, or touching spheres get missed (bench, 26/10)
             end
@@ -325,7 +330,7 @@ end
 -- level: if it shows as an orange warning texture, /lap line draw);  "draw" = flat chequer
 -- of 2 cm high boxes drawn every frame with the FFI square prism, same family as the spheres.
 -- Geometry from cp1: heading (hx,hy) recorded at /lap mark, line runs ACROSS the road.
-local line = { obj = nil, cells = {}, key = nil }
+local line = { objs = {}, cells = {} }
 local function lineGeometry(cp)
     local fx, fy = cp.hx or 0, cp.hy or 1
     local len = math.sqrt(fx*fx + fy*fy); if len < 1e-6 then fx, fy, len = 0, 1, 1 end
@@ -339,16 +344,12 @@ local function lineGeometry(cp)
 end
 
 function removeLine()
-    if line.obj then pcall(function() line.obj:delete() end); line.obj = nil end
-    line.cells = {}; line.key = nil
+    for _, o in ipairs(line.objs) do pcall(function() o:delete() end) end
+    line.objs = {}; line.cells = {}
 end
 
-function buildLine()
-    removeLine()
-    local cp = cfg.checkpoints[1]
-    if not cp or not cfg.markers then return end
+local function buildOneLine(cp, tag)
     local fx, fy, rx, ry, w, z = lineGeometry(cp)
-    line.key = string.format('%s:%.1f:%.1f:%.1f:%s', cfg.lineStyle, cp.x, cp.y, w, tostring(cp.hx))
     if cfg.lineStyle == 'paint' then
         -- stock GE pattern (util/procTrack.lua, editor/roadSpline/layerMgr.lua, 0.40 dump):
         -- createObject -> setField... -> registerObject -> insertNodeNoRegen x2 -> regenerate
@@ -361,13 +362,13 @@ function buildLine()
             r:setField('renderPriority', 0, '1')         -- low = on top of the level's own roads
             r:setField('drivability',    0, '-1')        -- keep it out of the AI / minimap road graph
             r:setField('startEndFade',   0, '0 0')
-            r:registerObject('kkLap_startline_' .. tostring(os.clock()):gsub('%.', '_'))
+            r:registerObject('kkLap_' .. tag .. 'line_' .. tostring(os.clock()):gsub('%.', '_'))
             r:insertNodeNoRegen(vec3(cp.x - rx * w/2, cp.y - ry * w/2, z), 1.0, 0)
             r:insertNodeNoRegen(vec3(cp.x + rx * w/2, cp.y + ry * w/2, z), 1.0, 1)
             r:regenerate()
-            line.obj = r
+            table.insert(line.objs, r)
         end)
-        if ok then dbg('start line painted (DecalRoad)'); return end
+        if ok then dbg(tag .. ' line painted (DecalRoad)'); return end
         dbg('paint failed, falling back to draw: ' .. tostring(err))
     end
     -- flat chequer: 2 rows x 10 cells, 1 m deep in total, drawn every frame from onPreRender
@@ -382,7 +383,14 @@ function buildLine()
             table.insert(line.cells, { px, py, z + 0.03, qx, qy, z + 0.03, cw, ((i + r) % 2 == 0) })
         end
     end
-    dbg('start line drawn as ' .. #line.cells .. ' flat cells')
+    dbg(tag .. ' line drawn as flat cells, total ' .. #line.cells)
+end
+
+function buildLine()
+    removeLine()
+    if not cfg.markers then return end
+    if cfg.checkpoints[1] then buildOneLine(cfg.checkpoints[1], 'start') end
+    if cfg.finish then buildOneLine(cfg.finish, 'finish') end     -- its own chequered line too
 end
 
 -- ----------------------------------------------------- per-frame drawing
@@ -391,7 +399,7 @@ end
 -- triggers. Label floats above it. Your next checkpoint is blue, start/finish green, rest orange.
 local function onPreRender(dt)
     if not draw.ok or not cfg.markers then return end
-    local n = #cfg.checkpoints
+    local n = #tgt
     if n == 0 then return end
 
     local s                                       -- state of the car in seat 0, drives the colours
@@ -405,9 +413,9 @@ local function onPreRender(dt)
         end
     end
 
-    for i, cp in ipairs(cfg.checkpoints) do
+    for i, cp in ipairs(tgt) do
         local style = M.cpStyle(i, s, n)
-        local base  = (i == 1) and 'START / FINISH' or ('CP ' .. i)
+        local base  = (i == 1) and (cfg.finish and 'START' or 'START / FINISH') or ((cfg.finish and i == n) and 'FINISH' or ('CP ' .. i))
         local c, label
         if style == 'flash' then c = draw.flash; label = base .. '  OK'
         elseif style == 'next' then c = draw.next; label = '> ' .. base .. ' <'

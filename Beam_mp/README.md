@@ -28,6 +28,9 @@ Runs the real server and client Lua against each other with fake BeamMP calls an
 
 ## In game
     /lap mark          drop a checkpoint at your car. First one is start/finish.
+    /lap start [r]     move the start line to your car. Every other checkpoint is kept. (v0.9.0)
+    /lap finish [r]    a separate finish line at your car: point-to-point course (hill climb, drag).
+    /lap finish same   finish is the start line again (loop). Default.
     /lap list          show them
     /lap undo          remove the last one
     /lap clear         remove all
@@ -55,6 +58,14 @@ so one file tells the whole story. Game side, if ever needed: grep KKLAP beamng.
 Never put a colon in an event name. BeamMP splits `name:data` at the first colon on both
 server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and is dropped silently.
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
+
+## Start and finish (v0.9.0)
+By default the start line is the finish line: a loop, and every crossing after the first
+ends a lap. /lap finish puts a separate finish line at your car and the course becomes
+point-to-point: the start only starts (crossing it mid-run restarts you), the finish ends
+the run, then you go back to the start to go again. The finish gets its own chequered line
+and its own tarseal check. /lap start moves the start line without touching the rest.
+The honk countdown works the same either way: park in the start bubble, honk, GO.
 
 ## The start/finish line (v0.8.0)
 The first /lap mark is special. It is only accepted when every wheel touching the ground is on
