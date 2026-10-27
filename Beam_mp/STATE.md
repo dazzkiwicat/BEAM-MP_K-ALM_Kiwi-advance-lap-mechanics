@@ -180,7 +180,7 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   the lap toast. If the honk does nothing: kkLap.log tells which side; look for "honked on
   the line" ([C0]) and "countdown started by".
 
-- 26/10: **LIVE: lap toast with sectors seen** (screenshot): "guest7144128 lap 1 3:16.875
+- 26/10: **LIVE: lap toast with sectors seen** (screenshot): "guest1234567 lap 1 3:16.875
   [16.0 | 10.2 | 27.3 | ... 17 sectors ...] best 3:16.875". Darren: "ha that worked".
   So v0.5.0+ sector timing works on the real server and his track has 17 checkpoints.
   UNCHECKED from this: whether the honk countdown fired (not in the screenshot) and the

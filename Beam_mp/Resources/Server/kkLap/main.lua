@@ -142,7 +142,7 @@ local function sectorsText(list)
     return "[" .. table.concat(out, " | ") .. "]"
 end
 -- who a driver IS: the BeamMP account id when there is one ("id:123456"), else the name.
--- Guest names (guest7144128) change every session; the id does not (v0.20).
+-- Guest names (guest1234567) change every session; the id does not (v0.20).
 local function playerKey(pid)
     local name = MP.GetPlayerName(pid) or ("p" .. pid)
     local ok, ids = pcall(MP.GetPlayerIdentifiers, pid)
