@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -471,6 +471,33 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   shows after /rules add, or after removing "rules" from config.json.
   NEXT (one step): upload v0.22 (main.lua + kkLap_v0.22.zip, delete kkLap_v0.21.zip),
   restart, two cars in the bubble, one honks twice: countdown must start.
+- 30/10: v0.23, the race timer on the HUD like single-player time trials. Bench 151 (was 128).
+  Darren (live, v0.21): "the timer, or at least how far I am ahead of last lap, is small and hard
+  to read and distracting". The clock was the Race Realtime Display app and every sector a small
+  top-left toast; the toast was the distraction.
+  Now (client kkLap.lua): a second imgui window "##kkLapTimer", same flags and pivot as the HUD,
+  top centre, 40 px under the HUD window (imgui.GetWindowHeight, used by BeamMP chat.lua and stock
+  gui.lua; guessed from line counts if absent) or at y=90 when the HUD is empty. BIG running clock
+  (or "LAP  m:ss.mmm" held 4 s after a lap), MEDIUM gap 3 s after each split AND after the line
+  (red ImVec4(1,0.35,0.35,1) "+x.xx" slower, green (0.35,1,0.35,1) "-x.xx" faster or equal, the
+  server's deltaMs sign; nothing when deltaMs is absent), SMALL "best m:ss.mmm" from kkLap_lap's
+  bestMs (already in the payload, main.lua unchanged but for VERSION).
+  Clocks are per car now ([vid], from kkLap_info's vid); the window follows be:getPlayerVehicle(0)
+  (BeamNG GE) if that car is ours (MPVehicleGE.getOwnMap, BeamMP) and timing, else the lowest own
+  vid that is timing. A point-to-point run's clock goes away after the LAP hold.
+  Gone on the HUD path: the sector toast + flash (onSplit), the lap toast + flash (onLap), the
+  realtime() clock. Chat lines are unchanged. The lap beep that rode on the flash is played
+  straight from GE (Engine.Audio.playOnce 'event:UI_CountdownGo', BeamNG, in a pcall).
+  Fallback: /hud off, or an imgui error in either window (hud.broken), puts the v0.22 path back
+  (realtime() clock, sector/lap toasts and flashes). "lap timer path: ..." is logged on each change.
+  UNCHECKED live: text sizes look right in a narrow (split-screen) window; red/green readable on a
+  bright sky (no background, NoBackground flag); the lap beep from GE (UI event name played from
+  GE Lua); the 40 px gap with GetWindowHeight in BeamNG's binding (falls back to a guess).
+  Known, not fixed: a lap the server rejects (too short) or does not count (position reset) sends
+  no kkLap_lap, so the client clock keeps running from the previous line until the next lap or
+  "timing started". Same as before; it is just bigger now.
+  NEXT: upload main.lua + kkLap_v0.23.zip (delete kkLap_v0.22.zip), drive a lap: big clock under
+  the HUD, red/green gap at each checkpoint, best line after the first lap, no toasts.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

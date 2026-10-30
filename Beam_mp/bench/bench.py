@@ -147,7 +147,7 @@ Engine = { Audio = { fail = 0, plays = {},
         table.insert(Engine.Audio.plays, path)
     end } }
 local drawn = {}
-ui_imgui = { drawn = drawn, scale = 1,
+ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil,   -- colours[i] = 'r,g,b' of drawn[i] (TextColored)
     Cond_Always = 1, Cond_FirstUseEver = 4,
     WindowFlags_NoTitleBar = 1, WindowFlags_NoResize = 2, WindowFlags_NoMove = 4, WindowFlags_NoBackground = 128,
     WindowFlags_NoInputs = 512, WindowFlags_NoFocusOnAppearing = 4096,
@@ -155,15 +155,24 @@ ui_imgui = { drawn = drawn, scale = 1,
     ImVec4 = function(r, g, b, a) return { r, g, b, a } end,
     GetIO = function() return { DisplaySize = { x = 960, y = 1080 } } end,   -- half of a 1920 screen: split screen
     SetNextWindowPos = function() end, SetNextWindowSize = function() end, SetNextWindowBgAlpha = function() end,
-    Begin = function(name) table.insert(drawn, 'begin ' .. name) end, End = function() end,
+    Begin = function(name)
+        if ui_imgui.failBegin == name then error('stub: imgui call mismatch') end   -- bench sabotage of one window
+        table.insert(drawn, 'begin ' .. name)
+    end,
+    End = function() table.insert(drawn, 'end') end,
+    GetWindowHeight = function() return 60 end,
     SetWindowFontScale = function(f) ui_imgui.scale = f end,
     Text = function(t) table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. t) end,
-    TextColored = function(c, t) table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. t) end,
+    TextColored = function(c, t)
+        table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. t)
+        ui_imgui.colours[#drawn] = string.format('%.2f,%.2f,%.2f', c[1], c[2], c[3])
+    end,
     TextWrapped = function(t) end, Separator = function() end, Button = function() return false end,
 }
 """)
 AUDIO = C.globals().Engine["Audio"]
 DRAWN = C.globals().ui_imgui["drawn"]
+COLOURS = C.globals().ui_imgui["colours"]
 
 # ------------------------------------------------------------------ load real code
 work = pathlib.Path(tempfile.mkdtemp(prefix="kklap-bench-"))
@@ -179,17 +188,37 @@ M.onExtensionLoaded()                            # client asks server for config
 # ------------------------------------------------------------------ helpers
 def chat(msg): return S.globals()[s_handlers["onChatMessage"]](1, "Darren", msg)
 def chat_as(pid, name, msg): return S.globals()[s_handlers["onChatMessage"]](pid, name, msg)
+timer_frames = []   # (clock_ms, [(text, colour)] drawn in the ##kkLapTimer window, or None if not drawn) per frame (v0.23)
+hud_seen = set()    # every text that was on the HUD queue at the end of any frame (v0.23)
+HUD = M.hudState
+def hud_items(): return [(it["text"], bool(it["big"])) for it in HUD["items"].values()]
 def tick(dt_s=0.05, ms=None):
     """advance the clock and run one client frame"""
     clock_ms[0] += int((ms if ms is not None else dt_s*1000))
     fire_due_timers()
+    m = len(DRAWN)
     M.onUpdate(dt_s)
+    lines = None
+    for i in range(m + 1, len(DRAWN) + 1):
+        d = DRAWN[i]
+        if d == "begin ##kkLapTimer": lines = []
+        elif lines is not None:
+            if d == "end" or d.startswith("begin "): break
+            lines.append((d, COLOURS[i]))
+    timer_frames.append((clock_ms[0], lines))
+    for t, _ in hud_items(): hud_seen.add(t)
     M.onPreRender(dt_s)                           # markers code runs every frame too (no ffi here: no-op draw)
 def drive(vid, path, step_ms=100):
     """move vid through a list of points, one frame per point"""
     for p in path:
         positions[vid] = p; tick(ms=step_ms)
 def laps(): return [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_lap"]
+def fmt(ms): return "%d:%06.3f" % (ms // 60000, (ms % 60000) / 1000)          # same as the client's M.fmt
+def tframes(t0, t1): return [f for (t, f) in timer_frames if t0 < t <= t1]     # timer window frames in (t0, t1]
+def texts(f): return [d for d, _ in f] if f else []
+def gap_line(ms):                                                              # what the timer should draw for a deltaMs
+    return ("x2 " + ("+" if ms > 0 else "-") + "%.2f" % (abs(ms) / 1000), "1.00,0.35,0.35" if ms > 0 else "0.35,1.00,0.35")
+RUN = re.compile(r"^x3 \d+:\d\d\.\d{3}$")                                     # running clock, big
 
 failures = []
 def check(cond, what):
@@ -247,11 +276,16 @@ if got:
     check(lap["kph"] == 100, "lap event carries entry speed (100 km/h from 27.78 m/s)")
 splits = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_split"]
 check(splits and splits[-1]["kph"] == 100 and splits[-1]["sectorMs"] > 0, "split event carries sector time and speed")
-check(any("S1" in t and "100 km/h" in t for t in toasts), "client showed the sector toast with speed")
-check(any(f.startswith("S1") for f in flashes), "sector time flashed big in the centre")
-check(any(f.startswith("LAP  0:05.100") for f in flashes), "own lap time flashed big in the centre")
+check(not any(t.startswith("S1") for t in toasts) and not any(t.startswith("S1") for t in hud_seen),
+      "no sector toast and no sector text on the HUD queue any more (v0.23: the timer window has the gap)")
+check(not any(f.startswith("S1") or f.startswith("LAP") for f in flashes), "no sector or lap flash either (one clock, one place)")
+t_lap1 = timer_frames[-1][0]
+nxt = [f for t, f in timer_frames if t <= t_lap1]
+check(any(f and RUN.match(texts(f)[0]) for f in nxt[-40:]) and not any(f and "x1 best" in " ".join(texts(f)) for f in nxt),
+      "timer window showed the running clock big during lap 1, and no best line before a lap was set")
+check(not any(f and any(d.startswith("x2 ") for d in texts(f)) for f in nxt), "first split (no reference yet) shows no gap line")
 check("TIMING STARTED" in flashes, "timing started flashed")
-check(realtime[0] == "LAP  0:05.100", "running clock shows the finished lap for a few seconds")
+check(realtime[0] == "", "the Race Realtime Display app clock stays empty while the imgui timer runs (never two clocks)")
 check(any(pid == -1 and "Darren  lap 1" in m for pid, m in chat_out), "lap announced to everyone in chat")
 check(pathlib.Path("Resources/Server/kkLap/laps.log").exists(), "laps.log written")
 mark = len(chat_out); chat("/lap times")
@@ -267,7 +301,12 @@ check(lap2["laps"] == 2 and lap2["resets"] == 1, "lap 2 counts and carries reset
 check(lap2.get("deltaMs") == lap2["lapMs"] - 5100, "lap 2 carries the delta to the previous best (+%d ms)" % (lap2["lapMs"] - 5100))
 splits = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_split"]
 check(splits[0].get("deltaMs") is None and splits[1].get("deltaMs") is not None, "first sector has no delta, the second time through it does")
-check(any("S1" in t and ("+" in t or "-" in t) and "split" in t for t in toasts[-30:]), "sector toast shows the +/- delta")
+after1 = [f for t, f in timer_frames if t > t_lap1]
+check(after1 and texts(after1[0])[0] == "x3 LAP  0:05.100" and texts(after1[0])[-1] == "x1 best 0:05.100",
+      "after lap 1 the timer window shows 'LAP  0:05.100' big and the best line appears")
+g = gap_line(splits[1]["deltaMs"])
+check(any(f and g in f for f in after1), "the lap-2 sector gap is in the timer window with the server's sign and colour (%s)" % (g,))
+check(not any(t.startswith("S1") or "lap 2" in t for t in toasts), "no toast for lap 2 or its sector either")
 mark = len(chat_out); chat("/lap times")
 check(any("1. Darren" in m and "resets 0" in m for _, m in chat_out[mark:]), "/lap times lists the best lap after 2 laps (lap 1, which had no resets)")
 check("id:42" in json.load(open("Resources/Server/kkLap/times.json")), "board is keyed by the BeamMP account id, not the (guest) name")
@@ -363,8 +402,6 @@ for _ in range(10): tick()
 M.onHorn(100)                                                 # vehicle Lua reports the horn; car 100 is on the line
 check(any("honked on the line" in l for l in client_log[mark_cl:]), "a honk inside the start bubble asks for a countdown")
 check(any(pid == -1 and "ready  (1 of 2 in the start bubble" in m for pid, m in chat_out[mark_chat:]), "with two cars in the bubble one honk is not enough: 1 of 2 ready")
-HUD = M.hudState
-def hud_items(): return [(it["text"], bool(it["big"])) for it in HUD["items"].values()]
 check(any(n == "kkLap_hud" for (_, n, _) in events_to_client) and any(t.startswith("Darren ready  (1 of 2") and not big for t, big in hud_items()),
       "the 'ready 1 of 2' line reaches the on-screen HUD (kkLap_hud event lands in the queue)")
 check(not any("race start in" in m for _, m in chat_out[mark_chat:]), "no countdown until everyone in the bubble has honked")
@@ -618,6 +655,101 @@ check(any(n == "kkLap_bubble" and '"vid": 101' in d and '"inside": false' in d f
       "onVehicleDestroyed tells the server straight away and the countdown starts")
 for _ in range(120): tick()
 check(not dropped, "no client event was dropped by the server (after the v0.22 scenarios)")
+
+# ------------------------------------------------------------------ scenario 14: the race timer window (v0.23)
+# Darren 30/10: "the timer, or how far I am ahead of last lap, is small and hard to read and
+# distracting; place it like single-player time trials". One imgui window top centre: big clock,
+# medium red/green gap for 3 s, small best line. No toasts for splits or laps.
+own_vids[:] = [100, 101]; seat0_vid[0] = 100
+positions[100] = (50, 0, 0); positions[101] = (300, 300, 0)
+velocities[100] = (27.78, 0.0, 0.0); velocities[101] = (27.78, 0.0, 0.0)
+for _ in range(220): tick()
+chat("/lap reset")
+for _ in range(5): tick()
+check(all(f is None for _, f in timer_frames[-5:]), "timer: no window while no own car is timing")
+hud_seen.clear(); mark_t = len(toasts); mark_f = len(flashes)
+positions[100] = (5, 0, 0); tick(); t0 = clock_ms[0]          # into the start: timing started
+positions[100] = (50, 0, 0)
+for _ in range(20): tick()
+fr = tframes(t0, clock_ms[0])
+check(fr and all(f and RUN.match(texts(f)[0]) and len(f) == 1 for f in fr), "timer: running clock big, alone, from the frame after timing starts")
+# lap A: first sector 1 s, no reference yet after /lap reset: no gap line at all
+positions[100] = (100, 0, 0); tick(); t_sp = clock_ms[0]
+spA = json.loads([d for (p, n, d) in events_to_client if n == "kkLap_split"][-1])
+positions[100] = (50, 0, 0)
+for _ in range(100): tick()
+check(spA.get("deltaMs") is None and not any(f and any(d.startswith("x2 ") for d in texts(f)) for f in tframes(t_sp, clock_ms[0])),
+      "timer: first lap after /lap reset has no reference, so no gap line")
+check(not any(f and any(d.startswith("x1 best") for d in texts(f)) for f in tframes(t0, clock_ms[0])), "timer: no best line before a lap is set")
+positions[100] = (5, 0, 0); tick(); t_lap = clock_ms[0]          # lap A
+lp = laps()[-1]
+# lap B: straight from the line into cp2 in one frame, a faster first sector
+positions[100] = (100, 0, 0); tick(); t_sp2 = clock_ms[0]
+spB = json.loads([d for (p, n, d) in events_to_client if n == "kkLap_split"][-1])
+positions[100] = (50, 0, 0)
+for _ in range(110): tick()
+hold, back = tframes(t_lap, t_lap + 3800), tframes(t_lap + 4200, clock_ms[0])
+check(lp["vid"] == 100 and hold and all(f and texts(f)[0] == "x3 LAP  " + fmt(lp["lapMs"]) and f[0][1] == "1.00,0.90,0.30" for f in hold),
+      "timer: after a lap 'LAP  %s' holds big for 4 s" % fmt(lp["lapMs"]))
+check(back and all(f and RUN.match(texts(f)[0]) for f in back), "timer: then the running clock is back")
+check(spB.get("deltaMs") is not None and spB["deltaMs"] < 0 and all(f and gap_line(spB["deltaMs"]) in f for f in tframes(t_sp2, t_sp2 + 2800)),
+      "timer: a faster sector shows green with a minus (%s)" % (gap_line(spB["deltaMs"]) if spB.get("deltaMs") is not None else None,))
+check(all(f and texts(f)[-1] == "x1 best " + fmt(lp["bestMs"]) for f in tframes(t_lap, clock_ms[0])),
+      "timer: the small best line appears once a lap is set and stays")
+# lap C: a slow first sector again: red plus, 3 s, then gone
+positions[100] = (5, 0, 0); tick(); lpB = laps()[-1]
+positions[100] = (50, 0, 0)
+for _ in range(20): tick()
+positions[100] = (100, 0, 0); tick(); t_sp3 = clock_ms[0]
+spC = json.loads([d for (p, n, d) in events_to_client if n == "kkLap_split"][-1])
+positions[100] = (50, 0, 0)
+for _ in range(100): tick()
+if spC.get("deltaMs") is not None and spC["deltaMs"] > 0:
+    g = gap_line(spC["deltaMs"])
+    on, off = tframes(t_sp3, t_sp3 + 2800), tframes(t_sp3 + 3100, clock_ms[0])
+    check(on and all(f and g in f for f in on), "timer: a slower sector shows red with a plus for 3 s %s" % (g,))
+    check(off and all(f and not any(d.startswith("x2 ") for d in texts(f)) for f in off), "timer: then the gap line is gone")
+else:
+    check(False, "timer: lap C sector should be slower than lap B's (%s)" % spC.get("deltaMs"))
+check(lpB["laps"] == 2 and texts(timer_frames[-1][1])[-1] == "x1 best " + fmt(lpB["bestMs"]), "timer: best line follows the server's best for this car")
+check(not any(t.startswith("S1") or "lap " in t for t in toasts[mark_t:]) and not any(f.startswith("S1") or f.startswith("LAP") for f in flashes[mark_f:])
+      and not any(t.startswith("S1") or t.startswith("LAP") or "last sector" in t for t in hud_seen),
+      "timer: no toast, flash or HUD-queue item for splits or laps (%s)" % sorted(hud_seen))
+# two own cars timing: the window follows the car the camera is on (be:getPlayerVehicle(0))
+positions[101] = (50, 0, 0); tick(); positions[101] = (5, 0, 0); tick(); positions[101] = (50, 0, 0); tick()
+seat0_vid[0] = 101; tick()
+f101 = timer_frames[-1][1]
+seat0_vid[0] = 100; tick()
+f100 = timer_frames[-1][1]
+check(M.timerVid() == 100 and f101 and not any(d.startswith("x1 best") for d in texts(f101)) and f100 and texts(f100)[-1].startswith("x1 best"),
+      "timer: two own cars timing, the window shows the one the camera is on (101 no best yet, 100 has one)")
+seat0_vid[0] = None; tick()
+check(M.timerVid() == 100, "timer: no player vehicle, the first own timing car is shown")
+seat0_vid[0] = 100
+# an imgui error on the timer window: hud.broken, fall back to the v0.22 path, logged once
+mark_c = len(client_log)
+C.globals().ui_imgui["failBegin"] = "##kkLapTimer"
+for _ in range(6): tick()
+check(HUD["broken"] and sum("lap timer path: Race Realtime Display app + toasts" in l for l in client_log[mark_c:]) == 1
+      and any("HUD timer failed to draw" in l for l in client_log[mark_c:]), "timer: an imgui error falls back to the old path, logged once")
+check(re.match(r"^\d+:\d\d\.\d{3}$", realtime[0] or ""), "timer fallback: the running clock goes to the Race Realtime Display app (%s)" % realtime[0])
+mark_t = len(toasts)
+positions[101] = (100, 0, 0); tick(); positions[101] = (50, 0, 0); tick()        # 101 is mid-lap: its split
+check(any(t.startswith("S1") for t in toasts[mark_t:]), "timer fallback: the sector toast comes back so nothing is lost")
+C.globals().ui_imgui["failBegin"] = None; HUD["broken"] = False
+mark_c = len(client_log)
+tick(); tick()
+check(realtime[0] == "" and any("lap timer path: imgui window" in l for l in client_log[mark_c:]) and texts(timer_frames[-1][1])[:1] and RUN.match(texts(timer_frames[-1][1])[0]),
+      "timer: HUD back, the UI-app clock is cleared and the window draws again")
+# /hud off: the window goes, the old path takes over
+chat("/hud off"); chat("/lap reset")                       # a config resend clears the client state; reset the server side too
+check(any("on-screen HUD false" in m for _, m in chat_out[-3:]), "/hud off accepted")
+positions[100] = (5, 0, 0); tick(); positions[100] = (50, 0, 0)
+for _ in range(10): tick()
+check(all(f is None for _, f in timer_frames[-10:]) and re.match(r"^\d+:\d\d\.\d{3}$", realtime[0] or ""),
+      "timer: /hud off hides the window and the running clock goes to the UI app instead")
+chat("/hud on")
+for _ in range(3): tick()
 
 print()
 print("bench dir:", work)

@@ -145,20 +145,30 @@ surface read in the car's own VM.
 
 ## kkLap's own on-screen text, the HUD (v0.22)
 Works with no UI app at all, so it works in split screen where the countdown and chat apps
-have no room. Top centre of each game window: the countdown digits, GO, WRONG WAY and sector
-flashes in big letters, and under them up to 4 recent small lines: sector and lap times,
-"timing started", and the race-start lines from the server ("Darren ready (1 of 2 ...)",
-"race start in 5", "jumped the start", "honked twice"). Lines fade out by themselves. It
-does not take clicks or the mouse. Admin: /hud off turns it off for everyone, /hud on back.
+have no room. Top centre of each game window: the countdown digits, GO and WRONG WAY in big
+letters, and under them up to 4 recent small lines: "timing started" and the race-start lines
+from the server ("Darren ready (1 of 2 ...)", "race start in 5", "jumped the start", "honked
+twice"). Lines fade out by themselves. It does not take clicks or the mouse.
+Admin: /hud off turns it off for everyone, /hud on back.
+
+## The race timer (v0.23)
+Like the single-player time trials, right under the HUD text, top centre, no UI app needed:
+- BIG: your running lap time. For 4 s after you cross the line it shows "LAP  1:23.456"
+  (the server's official time), then the new lap's clock.
+- MEDIUM: how far you are ahead or behind, for 3 s after each checkpoint and after the line:
+  red "+0.35" = slower than your best, green "-0.21" = faster. Nothing on your first lap.
+- SMALL: "best 1:22.900" once you have a lap.
+It follows the car the camera is on (split screen: each own car keeps its own clock). It is
+only there while your car is timing. The running clock is a client-side estimate; the lap time
+it holds after the line is the server's.
+The sector and lap toasts are gone: they were small and distracting. Laps are still in chat.
 
 ## Big writing on screen (v0.7.0)
-Countdown, GO, every sector time and your own lap time flash BIG in the centre of the
-screen, with the game's own countdown beeps. A running lap clock sits mid-screen (a
-client-side estimate; the official time is the server's and comes with the lap toast).
-Both need two stock BeamNG UI apps on your layout, one time per player: press Alt+U,
-add "Race Countdown" and "Race Realtime Display", Alt+U again to leave. (App names from
-docs.beammp.com/beamng/lua-snippets; UNCHECKED whether a fresh freeroam layout already has
-them.) Without them nothing breaks: the small top-left toasts still carry everything.
+Countdown and GO flash BIG in the centre of the screen, with the game's own countdown beeps,
+if the stock "Race Countdown" UI app is on your layout (Alt+U, add it, Alt+U to leave; app name
+from docs.beammp.com/beamng/lua-snippets). The kkLap HUD shows them anyway.
+Fallback only: with /hud off (or if the game's imgui call fails) the lap clock goes back to the
+"Race Realtime Display" UI app and the sector and lap times back to small top-left toasts.
 
 ## Racing together (v0.6.0)
 The start bubble always works: drive back into it at any point, mid-lap, after a reset,
@@ -181,8 +191,8 @@ is loaded into every car when it spawns, the same way BeamMP loads its own; it w
 electrics.values.horn and calls kkLap.onHorn(id) on the game side once per press.
 
 ## What you get per lap (v0.5.0)
-Each checkpoint shows the driver a toast: sector time (since the previous checkpoint), split
-(since the line) and the speed entering the sphere, read straight off the car. Each finished
+Each checkpoint shows the driver the gap to their best for that sector under the race timer
+(v0.23; before that a toast with sector, split and speed, still the /hud off fallback). Each finished
 lap is announced to everyone in chat, with the sector list and the speed over the line:
     [LAP] Darren  lap 1  0:05.100  [0.2 | 4.9]  best 0:05.100  @100 km/h
 The server writes two files beside main.lua: laps.log (one line per lap, append only, the

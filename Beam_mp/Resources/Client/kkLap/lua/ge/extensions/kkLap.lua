@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.22'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.23'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -78,8 +78,33 @@ end
 local function beep(name) return "Engine.Audio.playOnce('AudioGui', 'event:UI_" .. name .. "')" end
 
 -- Mid-size persistent centre text: the running lap clock. Needs the "Race Realtime Display" UI app.
+-- Since v0.23 this is only the FALLBACK path (imgui HUD switched off with /hud off, or broken):
+-- the normal clock is the kkLapTimer imgui window (drawTimer, further down). Never both at once.
 local function realtime(msg) guihooks.trigger('ScenarioRealtimeDisplay', { msg = msg }) end
-local lapClock  = { running = false, t = 0, hold = 0, holdMsg = nil, shown = 0 }
+
+-- Per-car lap clocks (v0.23), keyed by game vehicle id: split screen = two cars, two clocks.
+-- CLIENT-SIDE ESTIMATE from the moment the server said "timing started" / "GO start"; the official
+-- time is the server's and arrives with kkLap_lap.
+-- [vid] = { running, t (s), hold (s left of the LAP line), holdMsg, stopAfterHold, gap = { text, ttl, slower } | nil, best (ms) }
+local clocks = {}
+local function clockFor(vid)
+    vid = tonumber(vid)
+    if not vid then return nil end
+    local c = clocks[vid]
+    if not c then
+        c = { running = false, t = 0, hold = 0, holdMsg = nil, stopAfterHold = false, gap = nil, best = nil }
+        clocks[vid] = c
+    end
+    return c
+end
+-- The gap line: negative = faster than the compared lap/sector, the same sign the server's deltaMs uses.
+local function gapItem(ms)
+    ms = tonumber(ms)
+    if not ms then return nil end                    -- no reference yet (first lap): nothing shown
+    return { text = (ms > 0 and '+' or '-') .. string.format('%.2f', math.abs(ms) / 1000), ttl = 3, slower = ms > 0 }
+end
+-- Which path shows the clock and the deltas: the imgui window, or the v0.22 UI-app + toast path.
+local function hudTimerOn() return cfg.hud ~= false and not hud.broken and ui_imgui ~= nil end
 
 -- ----------------------------------------------------- world drawing (BeamNG FFI)
 -- The same two draw calls BeamMP's own MPVehicleGE.lua uses for name tags and blobs:
@@ -120,7 +145,7 @@ local function onCfg(data)
     if d.yourPid ~= nil then M.myPid = d.yourPid end   -- server stamps the receiver's pid on a direct send
     cfg = d
     if cfg.markers == nil then cfg.markers = true end   -- config.json from before v0.4.0
-    lapClock.running = false; realtime('')              -- track changed or reset: clock off
+    for vid in pairs(clocks) do clocks[vid] = nil end; realtime('')   -- track changed or reset: clocks off
     if cfg.lineStyle == nil then cfg.lineStyle = 'paint' end
     musicRetry.t, musicRetry.tries = 0, 0   -- a new config = a fresh set of autoplay retries
     musicAutoCheck()      -- starts, keeps, or clears the autoplay track (music block below)
@@ -143,16 +168,31 @@ end
 local function onLap(data)
     local d = jsonDecode(data)
     if not d then return end
-    local last = d.sectors and d.sectors[#d.sectors]
-    -- toast: lap time and the LAST sector only. 17 sectors in one toast was a wall (26/10 screenshot).
-    -- The full sector list is in the chat line and in laps.log on the server.
-    toast(string.format('%s  lap %d  %s   last sector %s   best %s', d.name, d.laps, M.fmt(d.lapMs),
-          last and string.format('%.1f', last / 1000) or '-', M.fmt(d.bestMs)), 6)
-    if d.pid == M.myPid then
+    local hudOn = hudTimerOn()
+    if not hudOn then
+        -- fallback (v0.22 path): toast with the lap time and the LAST sector only. 17 sectors in one
+        -- toast was a wall (26/10 screenshot). The full list is in the chat line and laps.log.
+        local last = d.sectors and d.sectors[#d.sectors]
+        toast(string.format('%s  lap %d  %s   last sector %s   best %s', d.name, d.laps, M.fmt(d.lapMs),
+              last and string.format('%.1f', last / 1000) or '-', M.fmt(d.bestMs)), 6)
+    end
+    -- v0.23: no lap toast on the HUD path, other drivers' laps are in chat (server side, unchanged)
+    if d.pid ~= M.myPid then return end
+    local c = clockFor(d.vid)
+    if not c then return end
+    c.best = tonumber(d.bestMs) or c.best           -- the server's r.best for this car's run
+    c.running = true; c.t = 0
+    c.hold = 4; c.holdMsg = 'LAP  ' .. M.fmt(d.lapMs)
+    c.stopAfterHold = cfg.finish ~= nil              -- point-to-point: the run is over, the clock goes after the LAP line
+    c.gap = gapItem(d.deltaMs)                       -- the lap's own gap to the best, same slot as the sector gaps
+    if hudOn then
+        -- the sound used to ride on the lap flash; same Lua the UI would have run, straight from GE
+        -- (BeamNG Engine.Audio.playOnce, as the music fallback uses). UNCHECKED that a UI event plays from GE.
+        pcall(function() Engine.Audio.playOnce('AudioGui', 'event:UI_CountdownGo') end)
+    else
         local delta = d.deltaMs and string.format('   %+.1f', d.deltaMs / 1000) or '   first lap'
         flash('LAP  ' .. M.fmt(d.lapMs) .. delta, 4, true, beep('CountdownGo'))
-        lapClock.hold = 4; lapClock.holdMsg = 'LAP  ' .. M.fmt(d.lapMs); lapClock.t = 0; lapClock.shown = 0
-        realtime(lapClock.holdMsg)            -- now, not next frame
+        realtime(c.holdMsg)                          -- now, not next frame
     end
 end
 
@@ -162,6 +202,12 @@ local function onSplit(data)
     -- sector = since the previous checkpoint, split = since the line, speed = entering this sphere
     local sector = string.format('%.1f', (d.sectorMs or 0) / 1000)
     local delta  = d.deltaMs and string.format('   %+.1f', d.deltaMs / 1000) or ''    -- vs your best sector; "-0.3" = faster (v0.20)
+    if hudTimerOn() then
+        -- v0.23: the sector toast was the distraction (Darren, 30/10). The gap goes under the clock for 3 s.
+        local c = clockFor(d.vid)
+        if c then c.gap = gapItem(d.deltaMs) end
+        return
+    end
     toast(string.format('S%d  %s s%s   split %s   %d km/h', d.cp - 1, sector, delta, M.fmt(d.splitMs), d.kph or 0), 4)
     flash(string.format('S%d   %s%s', d.cp - 1, sector, delta), 2.5, true)
 end
@@ -171,7 +217,8 @@ local function onInfo(data)
     if not (d and d.msg) then return end
     dbg('server: ' .. d.msg)
     if d.msg == 'timing started' or d.msg == 'GO start' then
-        lapClock.running = true; lapClock.t = 0
+        local c = clockFor(d.vid)
+        if c then c.running = true; c.t = 0; c.hold = 0; c.gap = nil; c.stopAfterHold = false end
         if d.msg == 'timing started' then flash('TIMING STARTED', 1.5, false) end
     end
 end
@@ -470,7 +517,8 @@ local function hudColour(im, text)
     if text == 'GO!' then return im.ImVec4(0.3, 1.0, 0.3, 1.0) end
     return im.ImVec4(1.0, 0.9, 0.3, 1.0)
 end
-local function hudBig(im, text)
+-- scale: 3 = big, 2 = medium. Only the 'scale' mode has a medium; font3 and plain draw both the same.
+local function hudText(im, text, colour, scale)
     if hud.bigMode == nil then
         if pcall(im.SetWindowFontScale, 1) then hud.bigMode = 'scale'
         elseif type(im.PushFont3) == 'function' then hud.bigMode = 'font3'
@@ -478,14 +526,16 @@ local function hudBig(im, text)
         dbg('HUD big text uses ' .. hud.bigMode)
     end
     if hud.bigMode == 'scale' then
-        im.SetWindowFontScale(3); im.TextColored(hudColour(im, text), text); im.SetWindowFontScale(1)
+        im.SetWindowFontScale(scale or 3); im.TextColored(colour, text); im.SetWindowFontScale(1)
     elseif hud.bigMode == 'font3' and pcall(im.PushFont3, 'cairo_semibold_large') then
-        im.TextColored(hudColour(im, text), text); im.PopFont()
+        im.TextColored(colour, text); im.PopFont()
     else
-        im.TextColored(hudColour(im, text), text)
+        im.TextColored(colour, text)
     end
 end
+local function hudBig(im, text) hudText(im, text, hudColour(im, text), 3) end
 local function drawHud()
+    hud.bottom = nil                               -- where the HUD window ends this frame; nil = not drawn
     if cfg.hud == false or hud.broken or #hud.items == 0 then return end
     local im = ui_imgui
     if not im then return end
@@ -501,9 +551,96 @@ local function drawHud()
         im.Begin('##kkLapHud', nil, hudFlags(im))
         if big then hudBig(im, big.text) end
         for _, it in ipairs(small) do im.Text(it.text) end
+        -- imgui.GetWindowHeight: used by BeamMP's chat.lua and the stock gui.lua. If the call is
+        -- missing, a rough guess (16 px font) so the timer still sits below the messages.
+        local okH, h = pcall(im.GetWindowHeight)
+        if not (okH and type(h) == 'number') then h = (big and 56 or 0) + #small * 20 + 16 end
+        hud.bottom = 40 + h
         im.End()
     end)
     if not ok then hud.broken = true; dbg('HUD failed to draw, imgui call mismatch: ' .. tostring(err)) end
+end
+
+-- ----------------------------------------------------- race timer (v0.23)
+-- "The timer is small and hard to read and the toasts distract; place it like single-player time
+-- trials" (Darren, 30/10). A second borderless imgui window, top centre, under the message HUD:
+--   BIG     running lap time (or "LAP  m:ss.mmm" for 4 s after a lap)
+--   MEDIUM  latest gap, red "+0.35" slower / green "-0.21" faster, 3 s after each split or lap
+--   SMALL   "best m:ss.mmm" once this car has a lap
+-- It follows the car the camera is on (be:getPlayerVehicle(0), BeamNG GE) if that car is ours and
+-- timing, else the first own car that is timing. Hidden when no own car is timing.
+-- HUD off (/hud off) or an imgui error: the v0.22 path (Race Realtime Display app + toasts) instead.
+local function clockTick(dt)
+    for _, c in pairs(clocks) do
+        if c.running then
+            c.t = c.t + dt
+            if c.hold > 0 then
+                c.hold = c.hold - dt
+                if c.hold <= 0 and c.stopAfterHold then c.running = false end
+            end
+        end
+        if c.gap then
+            c.gap.ttl = c.gap.ttl - dt
+            if c.gap.ttl <= 0 then c.gap = nil end
+        end
+    end
+end
+local function timerVid()
+    local own = MPVehicleGE.getOwnMap()            -- BeamMP
+    local pv  = be:getPlayerVehicle(0)            -- BeamNG GE: the car the camera is on
+    local id  = pv and pv:getID()
+    if id and own[id] and clocks[id] and clocks[id].running then return id end
+    local first
+    for vid, c in pairs(clocks) do
+        if c.running and own[vid] and (not first or vid < first) then first = vid end
+    end
+    return first
+end
+M.timerVid = timerVid     -- for the bench
+local timer = { path = nil, shown = 0, rt = '' }   -- rt: what the fallback last put on the UI app
+local function drawTimer(c)
+    local im = ui_imgui
+    local begun = false
+    local ok, err = pcall(function()
+        local io = im.GetIO()
+        local y  = hud.bottom and (hud.bottom + 40) or 90
+        im.SetNextWindowPos(im.ImVec2(io.DisplaySize.x / 2, y), im.Cond_Always, im.ImVec2(0.5, 0))
+        im.Begin('##kkLapTimer', nil, hudFlags(im)); begun = true
+        if c.hold > 0 and c.holdMsg then hudText(im, c.holdMsg, im.ImVec4(1.0, 0.9, 0.3, 1.0), 3)
+        else hudText(im, M.fmt(math.floor(c.t * 1000)), im.ImVec4(1.0, 1.0, 1.0, 1.0), 3) end
+        if c.gap then
+            hudText(im, c.gap.text, c.gap.slower and im.ImVec4(1, 0.35, 0.35, 1) or im.ImVec4(0.35, 1, 0.35, 1), 2)
+        end
+        if c.best then im.Text('best ' .. M.fmt(c.best)) end
+        im.End(); begun = false
+    end)
+    if not ok then
+        if begun then pcall(im.End) end
+        hud.broken = true
+        dbg('HUD timer failed to draw, imgui call mismatch: ' .. tostring(err))
+    end
+end
+local function timerFrame(dt)
+    local hudOn = hudTimerOn()
+    local path  = hudOn and 'imgui window' or 'Race Realtime Display app + toasts'
+    if path ~= timer.path then
+        timer.path = path
+        dbg('lap timer path: ' .. path)
+        if hudOn and timer.rt ~= '' then realtime(''); timer.rt = '' end   -- never two clocks
+    end
+    local vid = timerVid()
+    local c   = vid and clocks[vid]
+    if hudOn then
+        if c then drawTimer(c) end
+        return
+    end
+    -- fallback, the v0.22 behaviour: the UI app's clock, refreshed every 0.1 s (LAP line every 0.5 s)
+    timer.shown = timer.shown + dt
+    local msg
+    if not c then msg = ''
+    elseif c.hold > 0 then if timer.shown > 0.5 then msg = c.holdMsg end
+    elseif timer.shown > 0.1 then msg = M.fmt(math.floor(c.t * 1000)) end
+    if msg and (msg ~= '' or timer.rt ~= '') then timer.shown = 0; timer.rt = msg; realtime(msg) end
 end
 
 -- ----------------------------------------------------- deleted / respawned cars (v0.22)
@@ -512,6 +649,7 @@ end
 -- honked and the countdown could never start (live, 30/10). Drop its state and, if it was
 -- in the bubble, tell the server it left.
 local function dropVeh(vid, why)
+    clocks[vid] = nil                              -- its lap clock goes with it (v0.23)
     local s = state[vid]
     if not s then return end
     if s.inStart then TriggerServerEvent('kkLap_bubble', jsonEncode({ vid = vid, inside = false })) end
@@ -547,24 +685,14 @@ local function onUpdate(dt)
         end
     end
 
-    -- running lap clock on screen. CLIENT-SIDE ESTIMATE from the moment the server said
-    -- "timing started": the official time is the server's and arrives with the lap toast.
-    if lapClock.running then
-        lapClock.t = lapClock.t + dt
-        lapClock.shown = lapClock.shown + dt
-        if lapClock.hold > 0 then
-            lapClock.hold = lapClock.hold - dt
-            if lapClock.shown > 0.5 then lapClock.shown = 0; realtime(lapClock.holdMsg) end
-        elseif lapClock.shown > 0.1 then
-            lapClock.shown = 0; realtime(M.fmt(math.floor(lapClock.t * 1000)))
-        end
-    end
+    clockTick(dt)          -- per-car lap clocks (v0.23); drawn by timerFrame below
 
     musicTick(dt)
     musicRetryTick(dt)
     drawRules()
     hudTick(dt)
     drawHud()
+    timerFrame(dt)         -- after drawHud: it sits under the HUD window (hud.bottom)
     pruneState(dt)
     if pending then
         pending.t = pending.t + dt
