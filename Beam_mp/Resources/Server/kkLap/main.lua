@@ -14,7 +14,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.25"   -- same number as the client zip it was built with
+local VERSION  = "0.26"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -201,7 +201,65 @@ local function sortedBoard()
     return list
 end
 
--- ------------------------------------------------- race start: shared countdown, one GO instant for all
+-- ------------------------------------------------- the lap clock (v0.26)
+-- Darren, 30/10: "the timer starts when enter bubble, no, it should start at zero" and "make sure
+-- the trigger for timer ONLY occurs when countdown has been activated via honk". So: the start
+-- bubble is a waiting area, the clock sits at zero there. The sequence is honk -> countdown -> GO
+-- -> the FIRST car of that race to drive out of the bubble starts the clock for every car of that
+-- race, at that one instant. A car whose lap IS running and crosses the line starts the next lap at
+-- once (drive-through). startLap is the ONLY code that sets r.lapStart to a time (the bench greps for it).
+local function startLap(r, t, why)
+    local n = #cfg.checkpoints + (cfg.finish and 1 or 0)
+    r.lapStart  = t
+    r.lastCp    = t
+    r.sectors   = {}
+    r.resets    = 0; r.invalid = false; r.invalidWhy = nil
+    r.pendingGo = false
+    r.nextCp    = (n > 1) and 2 or 1
+    dbg(string.format("lap clock started for %s#%s at %d: %s", tostring(r.name), tostring(r.vid), t, why))
+end
+-- the run of one car (key pid:vid); made on first contact, its sector deltas start from the board's bests
+local function runFor(pid, vid)
+    local key = pid .. ":" .. tostring(vid)
+    local r = runs[key]
+    if not r then
+        local e = board[playerKey(pid)]
+        r = { nextCp = 1, lapStart = nil, lastCp = nil, best = nil, laps = 0, sectors = {}, resets = 0, invalid = false, pendingGo = false,
+              bestSectors = (e and e.bestSectors) and e.bestSectors or {} }
+        runs[key] = r
+    end
+    r.pid, r.vid, r.name = pid, vid, MP.GetPlayerName(pid) or ("p" .. pid)
+    return r, key
+end
+-- the car is in the start bubble with nothing to time: clock at zero, "at the line" on its screen.
+-- A partial lap (back into the bubble mid-lap) is dropped here: Darren's rule, 27/10.
+local function atLine(r, pid, vid, why)
+    if r.lapStart or r.pendingGo then dbg(string.format("at the line pid=%d vid=%s (%s)", pid, tostring(vid), why)) end
+    r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
+    r.raceNo = nil; r.pendingGo = false; r.nextCp = 1
+    MP.TriggerClientEventJson(pid, "kkLap_info", { vid = vid, msg = "at the line" })
+end
+-- The first GO starter of a race to drive out of the start bubble starts the clock of EVERY car of that
+-- race, at that instant: the slow car's lap includes its delay. Kept per race number, so a later group
+-- (someone arriving after the first GO, honking, its own GO) runs its own race and never touches a car
+-- that is already racing. Entries older than 20 races are forgotten at the next GO.
+local raceStart = {}      -- [race.no] = ms the clock of that race started
+local function raceOut(r, who, kph, t)
+    local no = r.raceNo
+    if not no then return end
+    if not raceStart[no] then
+        raceStart[no] = t
+        log("I", string.format("race %d clock started by %s leaving the bubble at %d km/h", no, who, math.floor(tonumber(kph) or 0)))
+    end
+    for _, r2 in pairs(runs) do
+        if r2.pendingGo and r2.raceNo == no then
+            startLap(r2, raceStart[no], string.format("race %d, first car out", no))
+            MP.TriggerClientEventJson(r2.pid, "kkLap_info", { vid = r2.vid, msg = "timing started" })
+        end
+    end
+end
+
+-- ------------------------------------------------- race start: shared countdown, one GO for all
 local race = { active = false, left = 0, tGo = nil, no = 0 }
 -- who is in the start bubble right now, and who has honked "ready" (v0.18, Darren's rule):
 -- the countdown starts when EVERY car in the bubble has honked. One car alone: its honk is
@@ -264,14 +322,24 @@ function onTick()
     else
         MP.CancelEventTimer("kkLap_tick")
         race.active = false
-        race.tGo    = nowMs()                 -- the one instant every GO-starter's lap counts from
+        race.tGo    = nowMs()                 -- the GO instant: honks are ignored for 10 s after it. The lap clock starts when the first car drives out (v0.26)
         race.no     = race.no + 1
-        local gone = {}
-        for _, e in ipairs(bubbleList()) do             -- this group has gone; late arrivals form the next
-            if not e.started then e.started = true; e.ready = false; e.goNo = race.no; gone[#gone + 1] = tag(e) end   -- goNo: in the bubble at THIS GO (v0.24)
-        end
+        raceStart[race.no] = nil; raceStart[race.no - 20] = nil   -- this race has no start instant yet; races older than 20 are forgotten
+        local n = #cfg.checkpoints + (cfg.finish and 1 or 0)
         say(-1, "GO!")
         MP.TriggerClientEventJson(-1, "kkLap_go", { t = race.tGo })
+        local gone = {}
+        for _, e in ipairs(bubbleList()) do             -- this group has gone; late arrivals form the next
+            if not e.started then
+                e.started = true; e.ready = false; e.goNo = race.no; gone[#gone + 1] = tag(e)   -- goNo: in the bubble at THIS GO (v0.24)
+                -- v0.26: the server names the starters from its own roster; the client sends nothing at GO.
+                -- The run waits (pendingGo) with its clock at zero until the first car of this race drives out.
+                local r = runFor(e.pid, e.vid)
+                r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
+                r.pendingGo = true; r.raceNo = race.no; r.nextCp = (n > 1) and 2 or 1
+                MP.TriggerClientEventJson(e.pid, "kkLap_info", { vid = e.vid, msg = "GO start" })
+            end
+        end
         log("I", string.format("GO at %d, race %d, in the bubble: %s", race.tGo, race.no, #gone > 0 and table.concat(gone, ", ") or "nobody"))
     end
 end
@@ -302,6 +370,19 @@ function onBubble(pid, data)                   -- client: "my car entered / left
         bubble[key] = nil
         if e then
             log("I", string.format("bubble -%s (now %d)", tag(e), bubbleSize()))
+            -- v0.26: the server judges the whole start sequence from this one event.
+            -- A ready (honked) car leaving while the countdown runs = jump start. Shame is the penalty.
+            if race.active and e.ready and not e.started then
+                sayHud(e.name .. " jumped the start")
+                log("I", string.format("%s jumped the start (%d s left)", tag(e), race.left or 0))
+            end
+            -- A GO starter driving out: the clock of its race starts, for every car in it (first one out).
+            -- A car that vanished (deleted, pruned: no speed in the payload) did not drive out.
+            local r = runs[key]
+            if r and r.pendingGo then
+                if d.kph ~= nil then raceOut(r, tag(e), d.kph, nowMs())
+                else r.pendingGo = false; log("I", string.format("%s left the bubble without driving (deleted or pruned): no race clock from it", tag(e))) end
+            end
             bubbleLeft()
         end
     end
@@ -317,9 +398,9 @@ function onArm(pid, data)                      -- client: "my car honked inside 
     if race.active then log("I", string.format("arm %s ignored: a countdown is already running (%d left)", who, race.left)); return end
     local e = bubble[key]
     if not e then
-        e = { pid = pid, vid = d.vid, name = name, ready = false, started = false }
-        bubble[key] = e
-        log("I", string.format("bubble +%s (now %d, from its honk: no bubble message came first)", who, bubbleSize()))
+        -- v0.26: the client sends every honk; only a car the server has in the start bubble counts
+        log("I", string.format("arm %s refused: not in the start bubble %s", who, (roster())))
+        return
     end
     local wasReady = e.ready == true             -- this is its second honk (v0.22)
     e.ready = true; e.started = false
@@ -341,12 +422,6 @@ function onArm(pid, data)                      -- client: "my car honked inside 
     end
     log("I", line .. (started and " -> countdown" or ""))
     if not started then log("I", "no countdown: " .. why) end
-end
-function onJump(pid, data)                     -- client: "my car left the bubble during the countdown"
-    local name = MP.GetPlayerName(pid) or ("p" .. pid)
-    local ok, d = pcall(Util.JsonDecode, data)
-    sayHud(name .. " jumped the start")
-    log("I", string.format("%s#%s jumped the start (%d s left)", name, tostring(ok and type(d) == "table" and d.vid or "?"), race.left or 0))
 end
 
 -- points: 100 for the top time, less the further off it you are. floor(100 * top / yours).
@@ -376,57 +451,19 @@ function onCross(pid, data)
     local ok, d = pcall(Util.JsonDecode, data)
     if not ok or type(d) ~= "table" then log("E", "bad cross payload from " .. pid .. ": " .. tostring(data)); return end
 
-    local key = pid .. ":" .. tostring(d.vid)
-    local r   = runs[key]
-    if not r then
-        local bkey = playerKey(pid)
-        local e = board[bkey]
-        r = { nextCp = 1, lapStart = nil, lastCp = nil, best = nil, laps = 0, sectors = {}, resets = 0, invalid = false,
-              bestSectors = (e and e.bestSectors) and e.bestSectors or {} }    -- deltas start from the board's bests
-    end
+    local r, key = runFor(pid, d.vid)
     r.resets = (r.resets or 0) + (tonumber(d.resets) or 0)      -- physics resets since the last checkpoint, from the client
-    runs[key] = r
     local t   = nowMs()
-    local who = (MP.GetPlayerName(pid) or ("p" .. pid)) .. "#" .. tostring(d.vid)
+    local who = r.name .. "#" .. tostring(d.vid)
     local n   = #cfg.checkpoints + (cfg.finish and 1 or 0)   -- targets: checkpoints, then the finish line if separate
 
     dbg(string.format("cross pid=%d vid=%s cp=%s expecting=%d", pid, tostring(d.vid), tostring(d.cp), r.nextCp))
 
     if d.cp == 1 and d.restart then
-        -- back in the start bubble mid-lap: the partial lap is dropped, timing starts fresh.
-        -- Always works, for everyone, whatever happened before (Darren's rule, 27/10).
-        dbg(string.format("restart pid=%d vid=%s, partial lap dropped", pid, tostring(d.vid)))
-        MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
-        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.raceNo = nil; r.invalidWhy = nil
-        r.nextCp   = (n > 1) and 2 or 1
-        return
-    end
-
-    if d.cp == 1 and d.go then
-        -- GO start (before the wrong-cp check: a car that rolled into the bubble expects cp2 already): the car was sitting in the bubble at GO. Its lap counts from the GO instant,
-        -- the same instant for everyone, not from when this packet arrived.
-        -- v0.24: only a car the server had in the bubble when it said GO (goNo = this GO). A car
-        -- flying through the bubble at that moment got the GO instant as its start: a free head start.
-        local e = bubble[key]
-        if race.tGo and t - race.tGo < 5000 and e and e.started and e.goNo == race.no then
-            r.lapStart = race.tGo; r.lastCp = race.tGo; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
-            r.raceNo = race.no                 -- laps from the same GO are compared together
-            r.nextCp   = (n > 1) and 2 or 1
-            MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "GO start" })
-        else
-            -- not on the line at GO: an ordinary line start from now (the client is already heading for cp2)
-            -- v0.25: which of the four conditions failed, with the numbers
-            local why
-            if not race.tGo then why = "the server has had no GO yet"
-            elseif t - race.tGo >= 5000 then why = string.format("GO was %d ms ago (limit 5000)", t - race.tGo)
-            elseif not e then why = "not in the server's bubble roster " .. (roster())
-            elseif not e.started then why = "in the bubble but not there at GO (arrived after it)"
-            else why = string.format("in the bubble at GO %s, this GO is %d", tostring(e.goNo), race.no) end
-            log("I", string.format("GO cross refused %s: %s; line start from now instead", who, why))
-            r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.raceNo = nil; r.invalidWhy = nil
-            r.nextCp   = (n > 1) and 2 or 1
-            MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
-        end
+        -- v0.26: the start bubble is a waiting area. The car drove into it with no lap to finish: a fresh
+        -- car, or one that came back mid-lap (the partial lap is dropped: Darren's rule, 27/10). The clock
+        -- sits at zero until a honk countdown, GO and the first car out (onBubble). Nothing starts here.
+        atLine(r, pid, d.vid, "partial lap dropped")
         return
     end
 
@@ -435,15 +472,6 @@ function onCross(pid, data)
         logEvery("wrongcp " .. key, 5000, "I", string.format("cross refused %s: got cp %s, wanted cp %d (of %d)%s", who, tostring(d.cp), r.nextCp, n,
                  r.lapStart and string.format(", lap %.1f s in", (t - r.lapStart) / 1000) or ", no lap running"), t)
         MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "wrong cp " .. tostring(d.cp) .. ", want " .. r.nextCp })
-        return
-    end
-
-    if cfg.finish and d.cp == 1 then
-        -- point-to-point: the start only starts. Crossing it mid-run restarts the run.
-        if r.lapStart then dbg("run restarted at the start line") end
-        MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
-        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
-        r.nextCp   = (n > 1) and 2 or 1
         return
     end
 
@@ -506,20 +534,27 @@ function onCross(pid, data)
                     if r.laps == 1 then say(pid, string.format("one more lap and your best counts for the board (minimum %d)", cfg.minLaps)) end
                 end
             end
+            r.resets = 0; r.invalid = false; r.invalidWhy = nil
+            if cfg.finish then
+                r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.nextCp = 1   -- course done: back into the start bubble, honk to go again
+            else
+                startLap(r, t, "drive-through: the next lap starts at once")
+            end
         else
-            MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
-        end
-        r.resets = 0; r.invalid = false; r.invalidWhy = nil
-        if cfg.finish then
-            r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.nextCp = 1   -- course done: back to the start to go again
-        else
-            r.lapStart = t
-            r.lastCp   = t
-            r.sectors  = {}
-            r.nextCp   = (n > 1) and 2 or 1
+            -- the line (or the finish) crossed with no lap running: nothing starts. The clock only ever
+            -- starts after a honk countdown (v0.26). This is a stale client (the server reloaded mid-lap)
+            -- or a hand-made event; the car is told it is at the line and goes back to the bubble to honk.
+            logEvery("nolap " .. key, 5000, "I", string.format("cross %s with no lap running: no timing without a honk countdown", who), t)
+            atLine(r, pid, d.vid, "cross with no lap running")
         end
     else
         -- a split: sector = time since the previous checkpoint, split = time since the line
+        if not r.lapStart then
+            -- a GO starter at another checkpoint before anyone drove out of the bubble (a teleport): no clock to split
+            log("I", string.format("split at cp %s from %s skipped: no lap clock yet (%s)", tostring(d.cp), who,
+                r.pendingGo and "GO start, nobody has left the bubble" or "no lap running"))
+            return
+        end
         local sector = t - r.lastCp
         table.insert(r.sectors, sector)
         r.lastCp = t
@@ -752,7 +787,7 @@ local function statusLines()
         L[#L + 1] = string.format("run %s#%s: next cp %d (last cp %s), lap start %s, laps %d, best %s, invalid %s%s%s",
             MP.GetPlayerName(tonumber(pid)) or ("p" .. tostring(pid)), tostring(vid), r.nextCp, r.lapStart and tostring(r.nextCp == 1 and "the last one" or r.nextCp - 1) or "-",
             ago(r.lapStart), r.laps or 0, r.best and fmt(r.best) or "-", tostring(r.invalid == true),
-            r.invalidWhy and (" (" .. r.invalidWhy .. ")") or "", r.raceNo and (", race " .. r.raceNo) or "")
+            r.invalidWhy and (" (" .. r.invalidWhy .. ")") or "", (r.raceNo and (", race " .. r.raceNo) or "") .. (r.pendingGo and ", GO start: waiting for the first car out" or ""))
     end
     L[#L + 1] = string.format("cfg: countdown %s, minLaps %s, minLapMs %s, autoStart %s, musicAuto %s, hud %s, adminChat %s, debug %s, trackRev %s, admins %s",
         tostring(cfg.countdown), tostring(cfg.minLaps), tostring(cfg.minLapMs), tostring(cfg.autoStart), tostring(cfg.musicAuto), tostring(cfg.hud),
@@ -1063,7 +1098,6 @@ function onInit()
     MP.RegisterEvent("kkLap_arm",          "onArm")
     MP.RegisterEvent("kkLap_bubble",       "onBubble")
     MP.RegisterEvent("kkLap_invalid",      "onInvalid")
-    MP.RegisterEvent("kkLap_jump",         "onJump")
     MP.RegisterEvent("kkLap_tick",         "onTick")
     MP.RegisterEvent("kkLap_ack",          "onAck")            -- v0.25: client got the config, says its version
     MP.RegisterEvent("onConsoleInput",     "onConsoleInput")   -- v0.25: "lap ..." typed in the server console

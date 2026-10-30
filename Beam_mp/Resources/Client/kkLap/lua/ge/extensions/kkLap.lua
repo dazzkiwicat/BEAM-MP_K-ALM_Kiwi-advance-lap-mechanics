@@ -14,11 +14,13 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.25'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.26'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
-local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
-local counting = false       -- a shared countdown is running (server says so)
+-- [vid] = { nextCp, inside, started, waiting, inStart, flashCp, flashT, lastPos, slewT, physResets, invalid }
+-- waiting: in the start bubble with no lap running (v0.26: the bubble is a waiting area, the clock is
+-- at zero there; honk -> countdown -> GO -> the first car out starts the clock, the server decides all of it)
+local state    = {}
 local buildLine, removeLine  -- defined further down, used by onCfg above them
 local musicAutoCheck         -- defined in the music block, used by onVehicleSpawned above it
 local musicRetry = { t = 0, tries = 0 }   -- autoplay retries (v0.22): every 3 s, at most 10, reset by each config
@@ -51,6 +53,9 @@ end
 -- (two narrow windows) the Race Countdown app and the chat app have no room: this does.
 -- items: { text, ttl (seconds left), big (countdown / GO / WRONG WAY / sector flash) }
 local hud = { items = {}, bigMode = nil, broken = false }
+-- three start lights (v0.26, Darren: "3 lights to go"), drawn in the HUD window during the countdown:
+-- 5 4 all dark, 3 one red, 2 two red, 1 three red, GO three green for 2 s, cancel = gone
+local lights = { on = false, lit = 0, green = false, ttl = 0 }
 local function hudPush(text, ttl, big)
     text = tostring(text); ttl = tonumber(ttl) or 3; big = big and true or false
     for i = #hud.items, 1, -1 do
@@ -74,8 +79,13 @@ local function hudTick(dt)
         it.ttl = it.ttl - dt
         if it.ttl <= 0 then table.remove(hud.items, i) end
     end
+    if lights.on and lights.green then          -- the green lights go out 2 s after GO
+        lights.ttl = lights.ttl - dt
+        if lights.ttl <= 0 then lights.on = false; lights.green = false; lights.lit = 0 end
+    end
 end
 M.hudState = hud          -- for the bench
+M.lightsState = lights    -- for the bench
 
 -- ImGui's Text, TextWrapped and TextColored are printf-style: a '%' in a rule line or a player's
 -- name ("%s") read arguments that are not there (review, v0.24). TextUnformatted (BeamNG's stock
@@ -114,14 +124,17 @@ local function realtime(msg) guihooks.trigger('ScenarioRealtimeDisplay', { msg =
 -- Per-car lap clocks (v0.23), keyed by game vehicle id: split screen = two cars, two clocks.
 -- CLIENT-SIDE ESTIMATE from the moment the server said "timing started" / "GO start"; the official
 -- time is the server's and arrives with kkLap_lap.
--- [vid] = { running, t (s), hold (s left of the LAP line), holdMsg, stopAfterHold, gap = { text, ttl, slower } | nil, best (ms) }
+-- [vid] = { running, t (s), hold (s left of the LAP line), holdMsg, stopAfterHold, atLine, goLine,
+--           info = { line, gap = { text, ttl, slower } | nil, split, ttl } | nil, best (ms), laps }
+-- atLine (v0.26): in the start bubble with nothing running, or a GO starter waiting for the first car
+-- out: the window shows 0:00.000. info (v0.26): the last sector, its speed, gap and split, 5 s.
 local clocks = {}
 local function clockFor(vid)
     vid = tonumber(vid)
     if not vid then return nil end
     local c = clocks[vid]
     if not c then
-        c = { running = false, t = 0, hold = 0, holdMsg = nil, stopAfterHold = false, gap = nil, best = nil }
+        c = { running = false, t = 0, hold = 0, holdMsg = nil, stopAfterHold = false, atLine = false, goLine = false, info = nil, best = nil, laps = nil }
         clocks[vid] = c
     end
     return c
@@ -185,10 +198,10 @@ local function onCfg(data)
     elseif newTrack then why = string.format('track changed (rev %s -> %s): lap state reset', tostring(lastTrackRev), tostring(d.trackRev))
     else why = string.format('same track (rev %s): lap state kept', tostring(d.trackRev)) end
     lastTrackRev = d.trackRev
-    counting = false      -- the server re-sends kkLap_count each second of a countdown; a reload mid-countdown left this on for good
     if newTrack then
         for vid in pairs(clocks) do clocks[vid] = nil end; realtime('')   -- track changed or reset: clocks off
         state = {}                                    -- checkpoints changed, start fresh
+        lights.on = false; lights.green = false; lights.lit = 0   -- a countdown from before the change is over (the server re-sends a live one each second)
     end
     if cfg.lineStyle == nil then cfg.lineStyle = 'paint' end
     musicRetry.t, musicRetry.tries = 0, 0   -- a new config = a fresh set of autoplay retries
@@ -203,6 +216,22 @@ local function onCfg(data)
     dbg('own map at cfg time: ' .. ownList())
     -- v0.25: tell the server which version got it (it warns a player on an old zip)
     TriggerServerEvent('kkLap_ack', jsonEncode({ v = M.VERSION, rev = d.trackRev, cps = #cfg.checkpoints, reset = newTrack }))
+end
+
+local function insideCp(veh, cp)
+    local p = veh:getPosition()
+    local dx, dy, dz = p.x - cp.x, p.y - cp.y, p.z - cp.z
+    return (dx*dx + dy*dy + dz*dz) <= (cp.r * cp.r)
+end
+-- a new lap starts here (line, restart, GO): a teleport still waiting to be judged happened
+-- before it, so it is not this lap's (v0.24; else a car put on the line by a teleport lost its first lap)
+local function slewDone(s, p)
+    s.slewT = 0
+    if p then s.lastPos = { x = p.x, y = p.y, z = p.z } end
+end
+-- the timer window's info line: "S2  31.4 s   187 km/h" (sector number, sector time, speed into the sphere)
+local function sectorLine(idx, sectorMs, kph)
+    return string.format('S%d  %.1f s   %d km/h', idx, (tonumber(sectorMs) or 0) / 1000, math.floor(tonumber(kph) or 0))
 end
 
 local function sectorsText(list)
@@ -227,10 +256,14 @@ local function onLap(data)
     local c = clockFor(d.vid)
     if not c then return end
     c.best = tonumber(d.bestMs) or c.best           -- the server's r.best for this car's run
-    c.running = true; c.t = 0
+    c.laps = tonumber(d.laps) or c.laps
+    c.running = true; c.t = 0; c.atLine = false; c.goLine = false
     c.hold = 4; c.holdMsg = 'LAP  ' .. M.fmt(d.lapMs)
     c.stopAfterHold = cfg.finish ~= nil              -- point-to-point: the run is over, the clock goes after the LAP line
-    c.gap = gapItem(d.deltaMs)                       -- the lap's own gap to the best, same slot as the sector gaps
+    -- v0.26 (Darren: "it doesn't show stage time or speed"): the last sector, its speed and the lap's gap
+    -- to the best go under the clock for 5 s, in the timer window, no toast
+    local last = d.sectors and d.sectors[#d.sectors]
+    c.info = { line = sectorLine(d.sectors and #d.sectors or 0, last, d.kph), gap = gapItem(d.deltaMs), split = nil, ttl = 5 }
     if hudOn then
         -- the sound used to ride on the lap flash; same Lua the UI would have run, straight from GE
         -- (BeamNG Engine.Audio.playOnce, as the music fallback uses). UNCHECKED that a UI event plays from GE.
@@ -249,9 +282,13 @@ local function onSplit(data)
     local sector = string.format('%.1f', (d.sectorMs or 0) / 1000)
     local delta  = d.deltaMs and string.format('   %+.1f', d.deltaMs / 1000) or ''    -- vs your best sector; "-0.3" = faster (v0.20)
     if hudTimerOn() then
-        -- v0.23: the sector toast was the distraction (Darren, 30/10). The gap goes under the clock for 3 s.
+        -- v0.23: the sector toast was the distraction (Darren, 30/10). v0.26: the information is back, in the
+        -- timer window: sector time and speed (5 s), the gap to your best sector (3 s), the split under it.
         local c = clockFor(d.vid)
-        if c then c.gap = gapItem(d.deltaMs) end
+        if c then
+            c.info = { line = sectorLine((tonumber(d.cp) or 1) - 1, d.sectorMs, d.kph), gap = gapItem(d.deltaMs),
+                       split = 'split ' .. M.fmt(d.splitMs), ttl = 5 }
+        end
         return
     end
     toast(string.format('S%d  %s s%s   split %s   %d km/h', d.cp - 1, sector, delta, M.fmt(d.splitMs), d.kph or 0), 4)
@@ -262,20 +299,39 @@ local function onInfo(data)
     local d = jsonDecode(data)
     if not (d and d.msg) then return end
     dbg('server: ' .. d.msg)
-    if d.msg == 'timing started' or d.msg == 'GO start' then
-        local c = clockFor(d.vid)
-        if c then c.running = true; c.t = 0; c.hold = 0; c.gap = nil; c.stopAfterHold = false end
-        if d.msg == 'timing started' then flash('TIMING STARTED', 1.5, false) end
+    local vid = tonumber(d.vid)
+    local c, s = clockFor(d.vid), vid and state[vid]
+    if d.msg == 'at the line' then
+        -- v0.26: in the start bubble with nothing to time (fresh, back mid-lap, or a cross the server would
+        -- not time). Clock held at zero; the lap state follows the server: no lap, heading for nothing.
+        if c then c.running = false; c.t = 0; c.hold = 0; c.holdMsg = nil; c.info = nil; c.stopAfterHold = false; c.atLine = true; c.goLine = false end
+        if s then
+            local veh, cp1 = be:getObjectByID(vid), cfg.checkpoints[1]
+            s.started = false; s.nextCp = 1
+            s.waiting = (veh and cp1 and insideCp(veh, cp1)) and true or false
+            s.inside  = s.waiting                -- the target is the start sphere itself: no edge while inside it
+        end
+    elseif d.msg == 'GO start' then
+        -- v0.26: the server named this car a starter of the race. Its clock stays at zero until the first
+        -- car of the race drives out of the bubble ("timing started" then, for everyone in it).
+        if c then c.running = false; c.t = 0; c.hold = 0; c.holdMsg = nil; c.info = nil; c.stopAfterHold = false; c.atLine = true; c.goLine = true end
+        if s then
+            s.nextCp = (#tgt > 1) and 2 or 1
+            s.started = true; s.waiting = false
+            s.invalid = false; s.physResets = 0
+            s.flashCp = 1; s.flashT = 1.5
+            local veh = be:getObjectByID(vid)
+            if veh then slewDone(s, veh:getPosition()) end
+            -- already in the start sphere: leaving it is not a crossing. With one sphere the target IS the start.
+            s.inside = (veh and tgt[s.nextCp]) and insideCp(veh, tgt[s.nextCp]) or (s.nextCp == 1)
+            dbg(string.format('vid %d GO start', vid))
+        end
+    elseif d.msg == 'timing started' then
+        if c then c.running = true; c.t = 0; c.hold = 0; c.info = nil; c.stopAfterHold = false; c.atLine = false; c.goLine = false end
+        flash('TIMING STARTED', 1.5, false)
     end
 end
 
--- shared race start. Server counts down for everyone; at GO every own car still in the
--- start bubble starts its lap from the server's GO instant.
-local function insideCp(veh, cp)
-    local p = veh:getPosition()
-    local dx, dy, dz = p.x - cp.x, p.y - cp.y, p.z - cp.z
-    return (dx*dx + dy*dy + dz*dz) <= (cp.r * cp.r)
-end
 
 -- BeamMP's walking "unicycle" (the player on foot; MPVehicleGE.lua checks the same name) is an own
 -- vehicle too: it must not be timed or counted in the start bubble (v0.24). getJBeamFilename: BeamNG GE.
@@ -284,47 +340,31 @@ local function isUnicycle(veh)
     return ok and j == 'unicycle'
 end
 
--- a new lap starts here (line, restart, GO): a teleport still waiting to be judged happened
--- before it, so it is not this lap's (v0.24; else a car put on the line by a teleport lost its first lap)
-local function slewDone(s, p)
-    s.slewT = 0
-    if p then s.lastPos = { x = p.x, y = p.y, z = p.z } end
-end
-
 local function onCount(data)
     local d = jsonDecode(data)
     if not d then return end
     if d.cancel then                                 -- /race stop (v0.24): the countdown is off, honk again
-        counting = false
-        for _, s in pairs(state) do s.armed = false end
+        lights.on = false; lights.green = false; lights.lit = 0
         toast('countdown cancelled', 3)
         return
     end
-    if not tonumber(d.n) then return end
-    if not counting then
-        -- countdown just began: remember which own cars are on the line, for the jump-start call
-        local cp1 = cfg.checkpoints[1]
-        for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
-            local veh, s = be:getObjectByID(vid), state[vid]
-            if veh and s and cp1 then s.armed = insideCp(veh, cp1); s.jumpSent = false end
-        end
-    end
-    counting = true
+    local n = tonumber(d.n)
+    if not n then return end
+    -- the lights: 5 and 4 all dark, 3 one red, 2 two red, 1 three red (v0.26)
+    lights.on = true; lights.green = false; lights.ttl = 0
+    lights.lit = (n <= 3) and math.max(0, math.min(3, 4 - n)) or 0
     toast(tostring(d.n), 1)
     local snd = (d.n <= 3) and beep('Countdown' .. (4 - d.n)) or beep('Countdown1')
     flash(tostring(d.n), 1.0, true, snd)
 end
 
--- Called from vehicle Lua (kkLapVE.lua) the frame a horn comes on. Honk in the start
--- bubble before your first sector = "we're ready", and the server counts everyone down.
+-- Called from vehicle Lua (kkLapVE.lua) the frame a horn comes on. Honk in the start bubble =
+-- "we're ready", and the server counts everyone down. v0.26: every own honk is sent; the server
+-- knows who is in its start bubble roster and whether a countdown runs, and refuses the rest.
 function M.onHorn(vid)
     if not MPVehicleGE.getOwnMap()[vid] then return end       -- BeamMP: only our own cars
-    local veh, cp1 = be:getObjectByID(vid), cfg.checkpoints[1]
-    local s = state[vid]
-    if not (veh and cp1 and s) then return end
-    if counting or not insideCp(veh, cp1) then return end       -- any time, mid-lap too: the start bubble always works (Darren, 27/10)
     TriggerServerEvent('kkLap_arm', jsonEncode({ vid = vid }))
-    dbg(string.format('vid %d honked on the line, asked for a countdown', vid))
+    dbg(string.format('vid %d honked, asked the server for a countdown (it decides from its start bubble roster)', vid))
 end
 
 -- Put our vehicle-side file into every car that spawns (BeamNG GE hook; BeamMP does the same).
@@ -338,29 +378,12 @@ local function onVehicleSpawned(vid)
     loadVE(vid); if own then musicAutoCheck() end
 end
 
+-- GO (v0.26): the server names the starters from its own start bubble roster and tells each car with
+-- kkLap_info "GO start" (onInfo above). Here only the shared show: GO! and three green lights for 2 s.
 local function onGo(data)
-    counting = false
     toast('GO!', 2)
     flash('GO!', 2.0, true, beep('CountdownGo'))
-    local cp1 = cfg.checkpoints[1]
-    if not cp1 then return end
-    for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
-        local veh = be:getObjectByID(vid)
-        local s   = state[vid]
-        if veh and s and not isUnicycle(veh) and insideCp(veh, cp1) then
-            local vx, vy, vz = veh:getVelocityXYZ()
-            TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = 1, go = true,
-                kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6 }))
-            s.nextCp  = (#tgt > 1) and 2 or 1
-            s.inside  = true                 -- already in cp1: leaving it is not a crossing
-            s.started = true
-            s.flashCp = 1; s.flashT = 1.5
-            s.armed   = false
-            s.invalid = false; s.physResets = 0
-            slewDone(s, veh:getPosition())
-            dbg(string.format('vid %d GO start', vid))
-        end
-    end
+    lights.on = true; lights.lit = 3; lights.green = true; lights.ttl = 2
 end
 
 -- music (v0.11). The server never plays anything: it tells every client, and each game plays
@@ -626,6 +649,43 @@ local function hudText(im, text, colour, scale)
     end
 end
 local function hudBig(im, text) hudText(im, text, hudColour(im, text), 3) end
+-- Three start lights under the big line (v0.26). Draw-list path first: GetWindowDrawList,
+-- GetCursorScreenPos, ImDrawList_AddCircleFilled, GetColorU322, Dummy are from memory of BeamNG's
+-- ui_imgui binding, UNCHECKED live, so the path runs in its own pcall; the first failure switches to
+-- three 'O' at scale 3 for good (hud.lightsMode = 'text'). A lights failure never sets hud.broken.
+local function lightColours(im)
+    local cols = {}
+    for i = 1, 3 do
+        if lights.green then cols[i] = im.ImVec4(0.2, 1.0, 0.2, 1.0)
+        elseif i <= lights.lit then cols[i] = im.ImVec4(1.0, 0.15, 0.15, 1.0)
+        else cols[i] = im.ImVec4(0.25, 0.25, 0.25, 1.0) end
+    end
+    return cols
+end
+local function drawLights(im)
+    if not lights.on then return end
+    local cols = lightColours(im)
+    if hud.lightsMode ~= 'text' then
+        local ok, err = pcall(function()
+            local dl = im.GetWindowDrawList()
+            local p  = im.GetCursorScreenPos()
+            for i = 1, 3 do
+                im.ImDrawList_AddCircleFilled(dl, im.ImVec2(p.x + 40 + (i - 1) * 80, p.y + 36), 30, im.GetColorU322(cols[i]), 32)
+            end
+            im.Dummy(im.ImVec2(260, 76))             -- reserve the space the circles were drawn over
+        end)
+        if ok then return end
+        hud.lightsMode = 'text'
+        dbg('lights: draw list missing, text lights (' .. tostring(err) .. ')')
+    end
+    pcall(function()
+        for i = 1, 3 do
+            if i > 1 then im.SameLine() end          -- SameLine: ui_imgui, used by stock UI code (UNCHECKED here)
+            hudText(im, 'O', cols[i], 3)
+        end
+    end)
+    pcall(im.SetWindowFontScale, 1)                  -- a throw inside hudText may have left the big scale on
+end
 -- v0.25: the first time a kkLap window is drawn, the screen size it was drawn for (split screen
 -- = half width) and the big-text method, once per session
 local function hudFirstDraw(io, which)
@@ -637,7 +697,7 @@ local function hudFirstDraw(io, which)
 end
 local function drawHud()
     hud.bottom = nil                               -- where the HUD window ends this frame; nil = not drawn
-    if cfg.hud == false or hud.broken or #hud.items == 0 then return end
+    if cfg.hud == false or hud.broken or (#hud.items == 0 and not lights.on) then return end   -- the lights draw with no messages too (v0.26)
     local im = ui_imgui
     if not im then return end
     local big, small = nil, {}
@@ -652,11 +712,12 @@ local function drawHud()
         im.SetNextWindowPos(im.ImVec2(io.DisplaySize.x / 2, 40), im.Cond_Always, im.ImVec2(0.5, 0))
         im.Begin('##kkLapHud', nil, hudFlags(im)); began = true
         if big then hudBig(im, big.text) end
+        drawLights(im)                                 -- the three start lights, under the big line (v0.26)
         for _, it in ipairs(small) do imText(im, it.text) end   -- player names can carry a % (v0.24)
         -- imgui.GetWindowHeight: used by BeamMP's chat.lua and the stock gui.lua. If the call is
         -- missing, a rough guess (16 px font) so the timer still sits below the messages.
         local okH, h = pcall(im.GetWindowHeight)
-        if not (okH and type(h) == 'number') then h = (big and 56 or 0) + #small * 20 + 16 end
+        if not (okH and type(h) == 'number') then h = (big and 56 or 0) + (lights.on and 76 or 0) + #small * 20 + 16 end
         hud.bottom = 40 + h
         im.End(); began = false
         hudFirstDraw(io, 'HUD')
@@ -670,9 +731,12 @@ end
 -- ----------------------------------------------------- race timer (v0.23)
 -- "The timer is small and hard to read and the toasts distract; place it like single-player time
 -- trials" (Darren, 30/10). A second borderless imgui window, top centre, under the message HUD:
---   BIG     running lap time (or "LAP  m:ss.mmm" for 4 s after a lap)
---   MEDIUM  latest gap, red "+0.35" slower / green "-0.21" faster, 3 s after each split or lap
---   SMALL   "best m:ss.mmm" once this car has a lap
+--   BIG     running lap time (or "LAP  m:ss.mmm" for 4 s after a lap; 0:00.000 while waiting in the bubble)
+--   SMALL   while waiting: what to do ("honk to race" / "GO - drive out ...")   (v0.26)
+--   MEDIUM  for 5 s after a split or lap: "S2  31.4 s   187 km/h", and on the same line the gap to your
+--           best, red "+0.35" slower / green "-0.21" faster, for 3 s   (v0.26: Darren wanted the info back)
+--   SMALL   "split m:ss.mmm" under it after a split
+--   SMALL   "best m:ss.mmm   lap N" once this car has a lap
 -- It follows the car the camera is on (be:getPlayerVehicle(0), BeamNG GE) if that car is ours and
 -- timing, else the first own car that is timing. Hidden when no own car is timing.
 -- HUD off (/hud off) or an imgui error: the v0.22 path (Race Realtime Display app + toasts) instead.
@@ -685,9 +749,13 @@ local function clockTick(dt)
                 if c.hold <= 0 and c.stopAfterHold then c.running = false end
             end
         end
-        if c.gap then
-            c.gap.ttl = c.gap.ttl - dt
-            if c.gap.ttl <= 0 then c.gap = nil end
+        if c.info then                             -- the info line lives 5 s, the gap on it 3 s (as before)
+            c.info.ttl = c.info.ttl - dt
+            if c.info.gap then
+                c.info.gap.ttl = c.info.gap.ttl - dt
+                if c.info.gap.ttl <= 0 then c.info.gap = nil end
+            end
+            if c.info.ttl <= 0 then c.info = nil end
         end
     end
 end
@@ -695,10 +763,11 @@ local function timerVid()
     local own = MPVehicleGE.getOwnMap()            -- BeamMP
     local pv  = be:getPlayerVehicle(0)            -- BeamNG GE: the car the camera is on
     local id  = pv and pv:getID()
-    if id and own[id] and clocks[id] and clocks[id].running then return id end
+    local function shown(c) return c.running or c.atLine end   -- a clock held at zero in the bubble counts (v0.26)
+    if id and own[id] and clocks[id] and shown(clocks[id]) then return id end
     local first
     for vid, c in pairs(clocks) do
-        if c.running and own[vid] and (not first or vid < first) then first = vid end
+        if shown(c) and own[vid] and (not first or vid < first) then first = vid end
     end
     return first
 end
@@ -712,12 +781,21 @@ local function drawTimer(c)
         local y  = hud.bottom and (hud.bottom + 40) or 90
         im.SetNextWindowPos(im.ImVec2(io.DisplaySize.x / 2, y), im.Cond_Always, im.ImVec2(0.5, 0))
         im.Begin('##kkLapTimer', nil, hudFlags(im)); begun = true
+        local white = im.ImVec4(1.0, 1.0, 1.0, 1.0)
         if c.hold > 0 and c.holdMsg then hudText(im, c.holdMsg, im.ImVec4(1.0, 0.9, 0.3, 1.0), 3)
-        else hudText(im, M.fmt(math.floor(c.t * 1000)), im.ImVec4(1.0, 1.0, 1.0, 1.0), 3) end
-        if c.gap then
-            hudText(im, c.gap.text, c.gap.slower and im.ImVec4(1, 0.35, 0.35, 1) or im.ImVec4(0.35, 1, 0.35, 1), 2)
+        else hudText(im, M.fmt(math.floor(c.t * 1000)), white, 3) end     -- 0:00.000 while held at the line
+        if c.atLine and not c.running then
+            imText(im, c.goLine and 'GO - drive out, the first car out starts the clock' or 'in the start bubble: honk to race')
         end
-        if c.best then imText(im, 'best ' .. M.fmt(c.best)) end
+        if c.info then
+            hudText(im, c.info.line, white, 2)
+            if c.info.gap then
+                pcall(im.SameLine)                   -- gap beside the sector line; on its own line if the call is missing
+                hudText(im, c.info.gap.text, c.info.gap.slower and im.ImVec4(1, 0.35, 0.35, 1) or im.ImVec4(0.35, 1, 0.35, 1), 2)
+            end
+            if c.info.split then imText(im, c.info.split) end
+        end
+        if c.best then imText(im, 'best ' .. M.fmt(c.best) .. (c.laps and ('   lap ' .. tostring(c.laps)) or '')) end
         im.End(); begun = false
         hudFirstDraw(io, 'timer')
     end)
@@ -762,7 +840,7 @@ local function dropVeh(vid, why, verb)
         if verb == 'destroyed' then dbg(string.format('vehicle %s destroyed (was in bubble: no, not one kkLap was timing)', tostring(vid))) end
         return
     end
-    if s.inStart then TriggerServerEvent('kkLap_bubble', jsonEncode({ vid = vid, inside = false })) end
+    if s.inStart then TriggerServerEvent('kkLap_bubble', jsonEncode({ vid = vid, inside = false })) end   -- no kph: it did not drive out (v0.26)
     state[vid] = nil
     dbg(string.format('vehicle %s %s (%s, was in bubble: %s)', tostring(vid), verb or 'pruned', why,
         s.inStart and 'yes, told the server it left' or 'no'))
@@ -823,7 +901,7 @@ local function onUpdate(dt)
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
         local veh = be:getObjectByID(vid)             -- BeamNG: id -> object
         if veh and not isUnicycle(veh) then           -- on foot: not a racer, not in the bubble roster (v0.24)
-            local s  = state[vid] or { nextCp = 1, inside = false, started = false, flashCp = nil, flashT = 0, armed = false }
+            local s  = state[vid] or { nextCp = 1, inside = false, started = false, waiting = false, flashCp = nil, flashT = 0 }
             state[vid] = s
             local cp = tgt[s.nextCp]
             local p  = veh:getPosition()
@@ -857,33 +935,43 @@ local function onUpdate(dt)
                 s.lastPos = { x = p.x, y = p.y, z = p.z }
             end
 
-            -- jump start: a car that was on the line when the countdown began and leaves the
-            -- bubble before GO. Announced to everyone by the server. Shame is the penalty.
-            if counting and s.armed and not s.jumpSent and not insideCp(veh, cfg.checkpoints[1]) then
-                s.jumpSent = true
-                TriggerServerEvent('kkLap_jump', jsonEncode({ vid = vid }))
+            -- The start bubble is a waiting area (v0.26, Darren 30/10: "it should start at zero"). Driving
+            -- INTO it with no lap to finish (a fresh car, or back mid-lap: Darren's rule 27/10, the partial
+            -- lap is dropped) parks the clock at zero. From there only honk -> countdown -> GO -> the first
+            -- car out starts the clock; the server runs all of that from the bubble enter/leave messages
+            -- below. A car heading for the line with its lap running (nextCp 1, started) is finishing a
+            -- lap: that entry is the normal crossing (edge test below) and the next lap starts at once.
+            local cp1 = cfg.checkpoints[1]
+            local inStart = insideCp(veh, cp1)
+            if inStart and not s.inStart and not (s.nextCp == 1 and s.started) then
+                if s.nextCp ~= 1 and wrongWay(veh, cp1) then
+                    flash('WRONG WAY', 2, true); dbg(string.format('vid %d entered the start backwards, ignored', vid))
+                else
+                    local vx, vy, vz = veh:getVelocityXYZ()
+                    local wasRunning = s.started          -- read before the send: the server's "at the line" answer may arrive inside it
+                    TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = 1, restart = true,
+                        kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6, pos = { x = p.x, y = p.y, z = p.z } }))
+                    dbg(string.format('vid %d in the start bubble, waiting at the line%s', vid, wasRunning and ': partial lap dropped' or ''))
+                    s.waiting = true; s.nextCp = 1; s.started = false
+                    s.invalid = false; s.physResets = 0
+                    s.flashCp = 1; s.flashT = 1.5
+                    slewDone(s, p)
+                    cp = tgt[1]; inside = true; s.inside = true    -- the target is the start sphere itself: no edge while it waits in it
+                end
+            elseif not inStart and s.inStart and s.waiting then
+                -- drove out without a GO: nothing starts (honk only). During a countdown the server
+                -- announces the jump start itself from the leave message below, so no line of ours then.
+                s.waiting = false
+                if not lights.on then flash('no timing: honk in the start bubble to race', 3, false) end
+                local c = clocks[vid]
+                if c and not c.running then c.atLine = false end   -- nothing to show: the window hides
+                dbg(string.format('vid %d left the start bubble without a GO: not timed', vid))
             end
-
-            -- Darren's rule (27/10): driving back into the START bubble always works, whatever
-            -- state you were in: the partial lap is dropped and timing starts fresh. Only when
-            -- the start is NOT the thing you were heading for (that case is the normal crossing).
-            local inStart = insideCp(veh, cfg.checkpoints[1])
-            if inStart and not s.inStart and s.nextCp ~= 1 and wrongWay(veh, cfg.checkpoints[1]) then
-                flash('WRONG WAY', 2, true); dbg(string.format('vid %d entered the start backwards, ignored', vid))
-            elseif inStart and not s.inStart and s.nextCp ~= 1 then
+            if inStart ~= s.inStart then
+                -- tell the server who is in the start bubble (v0.18). With the speed (v0.26): the first GO
+                -- starter to drive out starts the race clock, and a jump start is judged there too.
                 local vx, vy, vz = veh:getVelocityXYZ()
-                TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = 1, restart = true,
-                    kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6, pos = { x = p.x, y = p.y, z = p.z } }))
-                dbg(string.format('vid %d back in the start bubble: partial lap dropped, restart', vid))
-                s.nextCp = (n > 1) and 2 or 1
-                s.started = true; s.invalid = false; s.physResets = 0
-                s.flashCp = 1; s.flashT = 1.5
-                slewDone(s, p)
-                cp = tgt[s.nextCp]
-                inside = insideCp(veh, cp); s.inside = inside    -- re-aim at the new target before the edge test below
-            end
-            if inStart ~= s.inStart then            -- tell the server who is in the start bubble (v0.18)
-                TriggerServerEvent('kkLap_bubble', jsonEncode({ vid = vid, inside = inStart }))
+                TriggerServerEvent('kkLap_bubble', jsonEncode({ vid = vid, inside = inStart, kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6 }))
             end
             s.inStart = inStart
 
