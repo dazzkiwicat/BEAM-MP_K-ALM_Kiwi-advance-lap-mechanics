@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-30 by Claude (v0.25). Earlier: 2026-10-26. Current version: 0.3.0 (server main.lua and client zip share it). Branch: claude/blissful-mccarthy-eg6jed
+Updated: 2026-10-30 by Claude. Current version: **0.25** (server main.lua and client zip share it; 0.21 is what the live server runs). Branch: claude/blissful-mccarthy-eg6jed
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -23,7 +23,21 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. v0.25 (admin commands from the server console only; self-explaining logs, lap status, lap report) bench 244, NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. v0.25 (admin commands from the server console only; self-explaining logs, lap status, lap report) bench 244, NOT yet live. 
+## Next move (30/10, read this and go)
+1. Darren uploads v0.25: `Resources/Server/kkLap/main.lua` and `Resources/Client/kkLap_v0.25.zip`
+   (delete kkLap_v0.21.zip), restart. Check: console prints `kkLap v0.25 loaded on Linux`.
+2. In the panel console: `lap status` (proves onConsoleInput reaches us, UNCHECKED until then),
+   then `lap rules add Honk twice to start without the rest` (the live config.json still has the old 5 lines).
+3. Live tests, cheapest first: music before the first car; HUD countdown and big timer in a narrow
+   window; two cars, second Ctrl+R's away, first honks -> countdown; second won't honk, first honks
+   twice -> countdown; a `/set` in chat is refused (console only).
+4. Anything odd: `lap report` in the console, upload report.txt here, grep it, never paste it.
+5. Open question for Darren (review finding 14): on Ctrl+R a driver's lap count and best start
+   over (runs keyed pid:vid). Carry over, or leave as is? Recommendation: carry over.
+Owner docs: SERVER_OWNER.md (install, updates, console, what to send) and leaderboard/README.md
+(four-step Caddy setup, read-only). Both pushed; the leaderboard is UNCHECKED on a real host.
+Skipped on purpose: CONTRIBUTING/issues/releases (Darren 30/10).
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
