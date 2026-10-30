@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -498,6 +498,49 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   "timing started". Same as before; it is just bigger now.
   NEXT: upload main.lua + kkLap_v0.23.zip (delete kkLap_v0.22.zip), drive a lap: big clock under
   the HUD, red/green gap at each checkpoint, best line after the first lap, no toasts.
+
+- 30/10: v0.24, review fixes. Bench 194 (was 151). A reviewer traced v0.22 with a probe harness;
+  every number below has a "v0.24 #N" bench scenario that FAILED on v0.23 and passes now (#11 and
+  #12 fail on v0.23 only with #6 skipped, because #6's bug jams every later countdown).
+  1 trackRev: cfg.trackRev (saved) +1 on /mark /start /finish /finish same /undo /clear /reset and on a
+    (re)load of main.lua; that bump also resets the server runs. Clients drop lap state only when it
+    moves; the bubble roster is cleared only then. Bench: car past cp2, /hud on, the lap still counts.
+  2 one-checkpoint track: no `inside = false` after a crossing when n == 1. Bench: two passes = 2 crossings (was 10).
+  3 best sectors only from a lap that counts (not invalidated; the last one also not under minLapMs).
+    Bench: an invalidated lap with fast sectors leaves bestSectors [4000, 4000], next delta 0 (was +2900).
+  4 board keeps the best lap's own sectors and speed (r.bestSectorsOfBest, r.bestKph); laps = counted
+    laps (the first qualifying lap adds all of the run's laps, then +1). Bench: 8 s + 14 s laps = bestMs
+    8000, [4000, 4000], 100 km/h, laps 2 (was lap 2's sectors, 36 km/h, laps 1).
+  5 teleport backstop armed once and counted down every frame; a new lap (line, restart, GO) clears a
+    pending one. Bench: 600 m jump, car stays: invalidated within 1.25 s, once (was never).
+  6 /set only for listed keys in range (SET_KEYS, integers rounded down); /race N clamped 1..60;
+    countdown clamped before race.active; /race stop cancels the timer, tells clients (kkLap_count
+    cancel), waiting cars honk again. Bench: /set countdown 1e999 refused, countdown still runs, /race stop.
+  7 /finish refused with no start; /undo that empties the list drops the finish; client onUpdate
+    returns when cfg.checkpoints[1] is nil. Bench: all three (client threw every frame before).
+  8 /rules add|clear admin only (plain /rules for everyone). ImGui text is printf-style: plain text
+    via im.TextUnformatted when the binding has it (probed once, logged), else % doubled; TextWrapped
+    (rules) and TextColored always get % doubled (TextUnformatted does not wrap). Bench stub is now
+    printf-style. Bench: non-admin refused; a "%s" rule and a "%" HUD line drawn as written.
+  9 onClientEndMission / onExtensionUnloaded: retries spent and cfg.musicAuto cleared locally. Bench: 10 s after, no play.
+  10 deleteSource when createSource gave an id but the object/volume failed; a looping /music sends
+    only the config (cfg.musicNo restarts the same track, cfg.musicSeconds carries the timed loop).
+    Bench: /music kiwi = 1 play (was 2); id 77 deleted.
+  11 onInit sends the config to everyone when MP.GetPlayerCount() > 0 (BeamMP server API, present in
+    TLuaEngine.cpp); client onCfg sets counting = false. Bench: reload mid-countdown, the honk works.
+  12 the GO cross counts only for a car the server had in the bubble at this GO (e.goNo == race.no);
+    any other gets a line start from now. Bench: car arriving 1 s after GO (kkLap_go delayed) gets
+    "timing started", lap from its crossing, no race number.
+  13 rules and HUD windows call im.End in the error path when Begin ran (the timer had it). Bench: all three.
+  16 /autostart /markers /announce /debug /hud with no argument show the value (were: switch off, /hud on).
+    Own vehicles with getJBeamFilename() == 'unicycle' (BeamNG GE; BeamMP's MPVehicleGE.lua checks the
+    same name) are skipped in the client loop and at GO. Bench: show-only; the walker sends nothing.
+  OPEN QUESTION 14 (for Darren): runs are keyed pid:vid, so Ctrl+R (new vid) loses that run's laps and
+    best toward minLaps. Key by player instead? Not changed.
+  UNCHECKED 15: the reviewer's plausible frame-order race; not reproduced on the bench, not changed.
+  Also: no config.json = trackRev not written at start (nothing to protect). TextUnformatted and the
+  unicycle name are seen in the BeamNG/BeamMP sources, not live.
+  NEXT: upload main.lua + kkLap_v0.24.zip (delete kkLap_v0.23.zip), restart, /hud on mid-lap: the lap must still count.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

@@ -48,12 +48,14 @@ while the list is empty everyone is admin, and the first "/admin add <name>" loc
 ## The rules window (v0.19)
 A window inside the game (the game's own ImGui, same as BeamMP's debug windows) opens on
 join and on /rules, with the rules text, the player commands, and the admin commands if you
-are one. "/rules add <text>" adds a rule line, "/rules clear" empties them, "/set rulesOnJoin"
-is not a number so edit config.json to turn the join pop-up off.
+are one. "/rules add <text>" adds a rule line, "/rules clear" empties them (both admin only since
+v0.24; plain /rules is for everyone), "/set rulesOnJoin" is not a number so edit config.json to
+turn the join pop-up off.
 
 ## In game
 Every command works with or without the lap word: /mark is /lap mark, /times is /lap times (v0.12).
-Other plugins' slash commands are left alone.
+Other plugins' slash commands are left alone. The on|off commands (/autostart, /announce, /markers,
+/hud, /debug) with no word after them show the current value and change nothing (v0.24).
     /lap mark          drop a checkpoint at your car. First one is start/finish.
     /lap start [r]     move the start line to your car. Every other checkpoint is kept. (v0.09)
     /lap finish [r]    a separate finish line at your car: point-to-point course (hill climb, drag).
@@ -62,23 +64,30 @@ Other plugins' slash commands are left alone.
     /lap undo          remove the last one
     /lap clear         remove all
     /lap reset         wipe timing, keep checkpoints
-    /lap race [sec]    countdown for everyone, GO starts every car in the start bubble (v0.6.0)
+    /lap race [sec]    countdown for everyone, GO starts every car in the start bubble (v0.6.0); sec 1..60
+    /lap race stop     call a running countdown off; the cars in the bubble honk again (v0.24)
     /lap autostart on|off  a honk inside the start bubble starts that countdown (default on)
-    /lap set countdown 5
+    /lap set countdown 5   (1..60)
     /lap line paint|draw  start/finish line: painted on the road, or flat drawn chequer (v0.8.0)
-    /lap set lineWidth 10   metres across the road
+    /lap set lineWidth 10   metres across the road (1..50)
     /lap music <name> [0-10] [once|<sec>]  play art/sound/kkLap/<name>(.ogg, or name.mp3) on every client, on repeat; >1 boosts
     /lap music stop    (music also stops by itself when you leave the level, v0.19)
     /dj [text]         tell everyone where the Discord DJ set is (text is remembered) (v0.13)
     /lap times         best lap per player with sector times, resets and points, top 10
-    /lap set minLaps 2        laps a driver needs before their best goes on the board (v0.10)
-    /lap set pointsMinDrivers 3   drivers needed before points show
+    /lap set minLaps 2        laps a driver needs before their best goes on the board (v0.10) (1..100)
+    /lap set pointsMinDrivers 3   drivers needed before points show (1..100)
     /lap announce on|off  every sector to everyone in chat (default off; laps always announce)
     /lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
     /hud on|off        kkLap's own on-screen text, no UI app needed (default on, v0.22)
     /lap debug on|off  forward client debug lines to the server log
-    /lap set minLapMs 5000
+    /lap set minLapMs 5000    (0..3600000)
     /lap set markerAlpha 40   see-through-ness of the markers, 0 invisible, 255 solid (v0.5.2)
+    /lap set defaultRadius 8  (1..100)   /lap set musicVolume 0.5  (0..10)
+/set takes only the keys above, in range; whole-number keys are rounded down; anything else is
+refused with the range (v0.24: /set countdown 1e999 used to jam every race start).
+Config pushes (any admin command) no longer reset anyone's lap (v0.24). The config carries a
+track revision, trackRev, that moves only on /mark, /start, /finish, /finish same, /undo, /clear,
+/reset and a server (re)start; only then do the clients and the server start every lap afresh.
 
 ## Debug: read it slowly
 The console scrolls too fast. The plugin appends every line to

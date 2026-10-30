@@ -115,6 +115,8 @@ class Veh:
     def queueLuaCommand(self, cmd): ve_cmds.append((self.vid, cmd))
     def getVelocityXYZ(self):
         return velocities.get(self.vid, (0.0, 0.0, 0.0))    # m/s, three values like the game
+    def getJBeamFilename(self): return jbeams.get(self.vid, "pickup")   # BeamNG GE; BeamMP's walker is "unicycle"
+jbeams = {}                                                  # vid -> jbeam name (v0.24)
 
 C.globals().TriggerServerEvent = c_trigger_server
 C.globals().AddEventHandler    = c_add_handler
@@ -138,16 +140,22 @@ C.globals().jsonDecode = lambda s: py_to_lua(C, json.loads(s))
 # playOnce, which works unless Engine.Audio.fail > 0 (then it throws and counts down).
 # imgui stub: just enough of ui_imgui for the rules window and the HUD to run their draw
 # code; every Text call is recorded so the bench can see what reached the screen.
+# v0.24: Text, TextWrapped and TextColored are printf-style like the real ImGui (string.format
+# with no arguments: a lone "%s" throws, "%%" prints "%"); failText makes every text call throw
+# (an error between Begin and End); srcId makes createSource hand out a source id whose object
+# lookup then fails (the leak); every deleteSource id is recorded.
 C.execute("""
-Engine = { Audio = { fail = 0, plays = {},
-    createSource = function(ch, path) return nil end,
-    deleteSource = function(id) end,
+scenetree = { findObjectById = function(id) return nil end }
+Engine = { Audio = { fail = 0, plays = {}, srcId = nil, deleted = {},
+    createSource = function(ch, path) return Engine.Audio.srcId end,
+    deleteSource = function(id) table.insert(Engine.Audio.deleted, id) end,
     playOnce = function(ch, path, opts)
         if Engine.Audio.fail > 0 then Engine.Audio.fail = Engine.Audio.fail - 1; error('stub: audio not ready') end
         table.insert(Engine.Audio.plays, path)
     end } }
 local drawn = {}
-ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil,   -- colours[i] = 'r,g,b' of drawn[i] (TextColored)
+local function pf(t) if ui_imgui.failText then error('stub: text call failed') end; return string.format(t) end
+ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil, failText = false,   -- colours[i] = 'r,g,b' of drawn[i] (TextColored)
     Cond_Always = 1, Cond_FirstUseEver = 4,
     WindowFlags_NoTitleBar = 1, WindowFlags_NoResize = 2, WindowFlags_NoMove = 4, WindowFlags_NoBackground = 128,
     WindowFlags_NoInputs = 512, WindowFlags_NoFocusOnAppearing = 4096,
@@ -162,12 +170,12 @@ ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil,   -- colou
     End = function() table.insert(drawn, 'end') end,
     GetWindowHeight = function() return 60 end,
     SetWindowFontScale = function(f) ui_imgui.scale = f end,
-    Text = function(t) table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. t) end,
+    Text = function(t) table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. pf(t)) end,
     TextColored = function(c, t)
-        table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. t)
+        table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. pf(t))
         ui_imgui.colours[#drawn] = string.format('%.2f,%.2f,%.2f', c[1], c[2], c[3])
     end,
-    TextWrapped = function(t) end, Separator = function() end, Button = function() return false end,
+    TextWrapped = function(t) table.insert(drawn, 'w ' .. pf(t)) end, Separator = function() end, Button = function() return false end,
 }
 """)
 AUDIO = C.globals().Engine["Audio"]
@@ -750,6 +758,303 @@ check(all(f is None for _, f in timer_frames[-10:]) and re.match(r"^\d+:\d\d\.\d
       "timer: /hud off hides the window and the running clock goes to the UI app instead")
 chat("/hud on")
 for _ in range(3): tick()
+
+# ================================================================== v0.24: the review findings (30/10)
+# A reviewer traced these against v0.22 with a probe harness; each case below failed on v0.23
+# and passes on v0.24. Every scenario is guarded: a throw in the plugin is a FAIL, not a crash.
+G = S.globals()
+def guard(what, fn):
+    try: fn()
+    except Exception as e: check(False, "%s: raised %s" % (what, str(e).splitlines()[0][:120]))
+def fresh_track(points, own=(100,), park=(-30, 0, 0)):
+    """wait out any countdown, /lap clear, mark the points with car 100, park it outside everything"""
+    own_vids[:] = list(own); seat0_vid[0] = own[0]
+    for v in list(positions):
+        if v not in own and v != 100: del positions[v]
+    velocities[100] = (27.78, 0.0, 0.0)
+    C.globals().ui_imgui["failText"] = False; HUD["broken"] = False
+    chat("/lap clear")                                            # first: a broken track from the scenario before must not throw here
+    for _ in range(220): tick()
+    chat("/lap clear")
+    for p in points:
+        positions[100] = p; chat("/lap mark"); M.onSurface(100, True, "FL=ASPHALT")
+    positions[100] = park
+    for _ in range(3): tick()
+def crosses(since, vid): return [json.loads(d) for n, d in events_to_server[since:] if n == "kkLap_cross" and json.loads(d).get("vid") == vid]
+def infos(since, vid): return [json.loads(d)["msg"] for p, n, d in events_to_client[since:] if n == "kkLap_info" and json.loads(d).get("vid") == vid]
+def said(since, text, pid=None): return [m for p, m in chat_out[since:] if text in m and (pid is None or p == pid)]
+def board(): return json.load(open("Resources/Server/kkLap/times.json"))
+
+# ---- 1: a config push mid-lap (/hud on) must not cost the lap (cfg.trackRev)
+def s_v24_1():
+    fresh_track([(0, 0, 0), (100, 0, 0), (100, 100, 0)], own=(100, 101))
+    positions[101] = (2, 0, 0); velocities[101] = (0.0, 0.0, 0.0)   # a second car parked in the start bubble
+    for _ in range(3): tick()
+    L0 = len(laps()); E0 = len(events_to_client)
+    drive(100, [(0, 0, 0), (50, 0, 0), (100, 0, 0), (100, 50, 0)], step_ms=1000)   # line, cp2: now heading for cp3
+    rev = G.cfg["trackRev"]
+    chat("/hud on")                                               # any admin command that pushes the config
+    check(G.cfg["trackRev"] == rev and "1:101" in bubble_keys(), "v0.24 #1: /hud on pushes the config but keeps the track revision and the bubble roster")
+    for _ in range(3): tick()
+    drive(100, [(100, 100, 0), (50, 50, 0), (-30, -30, 0), (0, 0, 0)], step_ms=1000)   # cp3, then the line
+    got = laps()[L0:]
+    check(len(got) == 1 and len(got[0]["sectors"]) == 3 and not any(m.startswith("wrong cp") for m in infos(E0, 100)),
+          "v0.24 #1: car past cp2, admin /hud on, the next line crossing still counts a normal 3-sector lap (%s)" % [(l["lapMs"], l["sectors"]) for l in got])
+    mark = len(events_to_client); chat("/lap reset")
+    check(rev is not None and G.cfg["trackRev"] == rev + 1 and json.load(open(cfgfile)).get("trackRev") == rev + 1, "v0.24 #1: /reset moves trackRev, saved in config.json")
+guard("v0.24 #1", s_v24_1)
+
+# ---- 2: one checkpoint only: the car must leave the sphere before it can cross again
+def s_v24_2():
+    fresh_track([(0, 0, 0)])
+    L0 = len(laps()); X0 = len(events_to_server)
+    def passline():
+        for x in [-20, -6, -3, 0, 3, 6, 20]:
+            positions[100] = (x, 0, 0); tick(ms=100)
+    passline()
+    for _ in range(10): positions[100] = (200, 0, 0); tick(ms=1000)
+    positions[100] = (-30, 0, 0); tick(ms=1000)
+    passline()
+    c = crosses(X0, 100)
+    check(len(c) == 2, "v0.24 #2: 1-checkpoint track, two passes through it: exactly two crossings sent (%d)" % len(c))
+    check(len(laps()) == L0 + 1, "v0.24 #2: and the second pass is a lap")
+guard("v0.24 #2", s_v24_2)
+
+# ---- 6: /set and /race take only sane numbers; /race stop
+def s_v24_6():
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    mark = len(chat_out)
+    try: chat("/set countdown 1e999")
+    except Exception as e: check(False, "v0.24 #6: /set countdown 1e999 raised " + str(e)[:80])
+    check(G.cfg["countdown"] == 5 and said(mark, "countdown must be 1..60"), "v0.24 #6: /set countdown 1e999 is refused with the range")
+    chat("/set countdown 0.5"); chat("/set markerAlpha 300"); chat("/set trackRev 7")
+    check(G.cfg["countdown"] == 5 and G.cfg["markerAlpha"] == 40 and said(mark, "unknown numeric option trackRev"),
+          "v0.24 #6: out-of-range and unlisted keys refused (countdown 0.5, markerAlpha 300, trackRev)")
+    chat("/set countdown 3.9")
+    check(G.cfg["countdown"] == 3 and said(mark, "countdown = 3"), "v0.24 #6: an integer key is rounded down (3.9 -> 3)")
+    chat("/set countdown 5"); mark = len(chat_out)
+    try: chat("/race")
+    except Exception as e: check(False, "v0.24 #6: /race raised " + str(e)[:80])
+    for _ in range(120): tick()
+    check(said(mark, "race start in 5") and said(mark, "GO!"), "v0.24 #6: after the refused /set the countdown still runs to GO")
+    for _ in range(220): tick()
+    mark = len(chat_out); chat("/race 999")
+    check(said(mark, "race start in 60"), "v0.24 #6: /race seconds clamped to 60")
+    for _ in range(40): tick()
+    positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0.0)
+    for _ in range(3): tick()
+    mark = len(chat_out); chat("/race stop")
+    check(said(mark, "countdown cancelled", -1) and "kkLap_tick" not in timers, "v0.24 #6: /race stop cancels the countdown and its timer")
+    for _ in range(60): tick()
+    check(not said(mark, "GO!"), "v0.24 #6: no GO after /race stop")
+    G.cfg["countdown"] = 5                                        # /race 999 left it at 60
+    X0 = len(events_to_server); M.onHorn(100)
+    check(any(n == "kkLap_arm" for n, _ in events_to_server[X0:]) and said(mark, "race start in 5"),
+          "v0.24 #6: after /race stop a honk starts a new countdown (the client is not stuck counting)")
+    for _ in range(130): tick()
+    velocities[100] = (27.78, 0.0, 0.0)
+guard("v0.24 #6", s_v24_6)
+
+# ---- 7: /finish with no start; /undo emptying the list; a client given a finish and no start
+def s_v24_7():
+    fresh_track([])
+    positions[100] = (200, 0, 0); mark = len(chat_out)
+    chat("/finish"); M.onSurface(100, True, "FL=ASPHALT")
+    check(json.load(open(cfgfile)).get("finish") is None and said(mark, "mark the start first"), "v0.24 #7: /finish with no start is refused")
+    for _ in range(3): tick()
+    positions[100] = (0, 0, 0); chat("/start"); M.onSurface(100, True, "FL=ASPHALT")
+    positions[100] = (200, 0, 0); chat("/finish"); M.onSurface(100, True, "FL=ASPHALT")
+    check(json.load(open(cfgfile)).get("finish") is not None, "v0.24 #7: start then finish is accepted")
+    chat("/undo")
+    c = json.load(open(cfgfile))
+    check(not c["checkpoints"] and c.get("finish") is None, "v0.24 #7: /undo that removes the start removes the finish too")
+    G.cfg["finish"] = S.table(x=200, y=0, z=0, r=8)               # a hand-edited config.json: finish, no start
+    G.onGetCfg(1, "")
+    err = None
+    try:
+        for _ in range(5): tick()
+    except Exception as e: err = str(e).splitlines()[0][:100]
+    check(err is None, "v0.24 #7: a client given a finish and no start does not throw every frame (%s)" % err)
+    chat("/lap clear")
+guard("v0.24 #7", s_v24_7)
+
+# ---- 5: a teleport with no reset event where the car STAYS
+def s_v24_5():
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    drive(100, [(0, 0, 0), (50, 0, 0)], step_ms=500)
+    mark = len(chat_out)
+    positions[100] = (600, 600, 0)
+    for _ in range(25): tick()                                    # 1.25 s, never moves back
+    check(said(mark, "will not count") and said(mark, "in one frame"), "v0.24 #5: 600 m jump, the car stays there: the lap is invalidated within ~1 s")
+    for _ in range(25): tick()
+    check(len(said(mark, "will not count")) == 1, "v0.24 #5: judged once, not again every second")
+guard("v0.24 #5", s_v24_5)
+
+# ---- 4 and 3: the board keeps the BEST lap's sectors and speed; an invalidated lap sets no best sector
+def s_v24_4_3():
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    L0 = len(laps())
+    drive(100, [(0, 0, 0), (50, 0, 0), (100, 0, 0), (50, 50, 0), (0, 0, 0)], step_ms=2000)   # lap 1: 8 s, [4, 4], 100 km/h
+    velocities[100] = (10.0, 0.0, 0.0)                                                    # lap 2 crosses the line at 36 km/h
+    drive(100, [(50, 0, 0), (100, 0, 0), (50, 50, 0), (50, 50, 0), (50, 50, 0), (-30, 0, 0), (0, 0, 0)], step_ms=2000)   # 14 s
+    got = [(l["lapMs"], l["sectors"]) for l in laps()[L0:]]
+    e = board().get("id:42", {})
+    check(got == [(8000, [4000, 4000]), (14000, [4000, 10000])] and e.get("bestMs") == 8000 and e.get("sectors") == [4000, 4000]
+          and e.get("laps") == 2 and e.get("kph") == 100,
+          "v0.24 #4: lap1 8 s, lap2 14 s: board bestMs 8000 with lap 1's sectors and speed, laps 2 (%s)" % {k: e.get(k) for k in ("bestMs", "sectors", "laps", "kph")})
+    velocities[100] = (27.78, 0.0, 0.0)
+    # lap 3: a position reset lands the car in cp2 (fast sector 1), then a fast last sector: invalidated
+    mark = len(chat_out)
+    positions[100] = (30, 0, 0); tick(ms=500)
+    positions[100] = (95, 0, 0); M.onVehReset(100); tick(ms=600)
+    drive(100, [(50, 50, 0), (0, 0, 0)], step_ms=1000)
+    check(said(mark, "lap will not count"), "v0.24 #3: (setup) lap 3 is invalidated by a position reset")
+    # lap 4: the same 4 s sectors as lap 1: the deltas must be against lap 1, not the invalidated lap
+    E0 = len(events_to_client)
+    drive(100, [(50, 0, 0), (100, 0, 0), (50, 50, 0), (0, 0, 0)], step_ms=2000)
+    sp = [json.loads(d) for p, n, d in events_to_client[E0:] if n == "kkLap_split"]
+    lp = laps()[-1]
+    check(sp and sp[0].get("deltaMs") == 0 and board()["id:42"].get("bestSectors") == [4000, 4000],
+          "v0.24 #3: an invalidated lap leaves bestSectors untouched (lap 4 split delta %s, board bestSectors %s)" % (sp and sp[0].get("deltaMs"), board()["id:42"].get("bestSectors")))
+    check(lp["laps"] == 3 and lp["lapMs"] == 8000, "v0.24 #3: (setup) lap 4 counts as the run's third lap")
+guard("v0.24 #4/#3", s_v24_4_3)
+
+# ---- 12: a car flying through the start bubble at GO gets an ordinary line start, not the GO instant
+def s_v24_12():
+    fresh_track([(0, 0, 0), (100, 0, 0)], own=(100, 101))
+    positions[101] = (2, 0, 0); velocities[101] = (0.0, 0.0, 0.0)
+    for _ in range(3): tick()
+    mark = len(chat_out); M.onHorn(101)
+    check(said(mark, "race start in"), "v0.24 #12: (setup) car 101 alone in the bubble honks, countdown")
+    held = []; real_go = c_handlers["kkLap_go"]
+    c_handlers["kkLap_go"] = lambda d: held.append(d)            # kkLap_go still on the wire (network delay)
+    for _ in range(120):
+        tick()
+        if held: break
+    c_handlers["kkLap_go"] = real_go
+    for _ in range(20): tick()                                   # 1 s after the server's GO, car 100 arrives at speed
+    E0 = len(events_to_client)
+    positions[100] = (0, 0, 0); tick(); t_entry = clock_ms[0]
+    for d in held: real_go(d)                                    # ... and only now does the client hear GO
+    i100, i101 = infos(E0, 100), infos(E0, 101)
+    check(held and i101 == ["GO start"], "v0.24 #12: the car parked in the bubble at GO still gets the GO start (%s)" % i101)
+    check(i100 and i100[-1] == "timing started" and "GO start" not in i100, "v0.24 #12: the car that arrived after GO gets a line start, not GO (%s)" % i100)
+    L0 = len(laps()); mark = len(chat_out)
+    drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+    got = laps()[L0:]
+    line = said(mark, "Darren  lap", -1)
+    check(len(got) == 1 and got[0]["lapMs"] == clock_ms[0] - t_entry and line and "race" not in line[-1],
+          "v0.24 #12: its lap is timed from its own crossing (%s ms) and carries no race number" % (got[0]["lapMs"] if got else None))
+guard("v0.24 #12", s_v24_12)
+
+# ---- 9: leaving the level stops the music for good (no autoplay retry 3 s later)
+def s_v24_9():
+    chat("/music set.mp3 0.4")
+    for _ in range(10): tick()
+    M.onClientEndMission()
+    plays = len(AUDIO["plays"]); mark = len(client_log)
+    for _ in range(200): tick()                                  # 10 s in the menu
+    check(len(AUDIO["plays"]) == plays and not any("music autoplay" in l for l in client_log[mark:]),
+          "v0.24 #9: end mission, 10 s later the music has not been started again")
+    chat("/music stop")
+guard("v0.24 #9", s_v24_9)
+
+# ---- 10: one /music = one play; a source that half-worked is deleted
+def s_v24_10():
+    plays = len(AUDIO["plays"]); chat("/music kiwi 0.3")
+    check(len(AUDIO["plays"]) - plays == 1, "v0.24 #10: /music kiwi (on repeat) = exactly one play call (%d)" % (len(AUDIO["plays"]) - plays))
+    plays = len(AUDIO["plays"]); chat("/music kiwi 0.5 once")
+    check(len(AUDIO["plays"]) - plays == 1, "v0.24 #10: /music kiwi 0.5 once = exactly one play call")
+    chat("/music stop")
+    AUDIO["srcId"] = 77; dels = len(AUDIO["deleted"])
+    chat("/music kiwi 0.3")
+    check(77 in list(AUDIO["deleted"].values())[dels:], "v0.24 #10: createSource gave id 77 but the object lookup failed: deleteSource(77)")
+    AUDIO["srcId"] = None; chat("/music stop")
+guard("v0.24 #10", s_v24_10)
+
+# ---- 8: /rules add and clear are admin only; a % in a rule or on the HUD is drawn as it is
+def s_v24_8():
+    mark = len(chat_out); n = len(G.cfg["rules"])
+    chat_as(2, "Bob", "/rules add %s%s%n"); chat_as(2, "Bob", "/rules clear")
+    check(len(G.cfg["rules"]) == n and len(said(mark, "admin only", 2)) == 2, "v0.24 #8: a non-admin cannot /rules add or /rules clear")
+    chat_as(2, "Bob", "/rules")
+    check(rs.open == True, "v0.24 #8: a non-admin can still open the window")
+    chat("/rules add Use 100% throttle, no %s tricks")
+    G.onPlayerJoin(1)                                             # opens the window with the new rule
+    m0 = len(DRAWN)
+    for _ in range(3): tick()
+    drawn = list(DRAWN.values())[m0:]
+    check(rs.open == True and "w - Use 100% throttle, no %s tricks" in drawn, "v0.24 #8: a rule containing %s and % is drawn as written (printf-style stub)")
+    chat("/rules")
+    deliver_to_client("kkLap_hud", json.dumps({"msg": "p%s ready 100%"}))
+    m0 = len(DRAWN); tick()
+    check(not HUD["broken"] and "x1 p%s ready 100%" in list(DRAWN.values())[m0:], "v0.24 #8: a HUD line with % in it is drawn as written, HUD not broken")
+    G.cfg["rules"] = S.table_from([r for r in G.cfg["rules"].values() if "%" not in r])
+guard("v0.24 #8", s_v24_8)
+
+# ---- 13: an imgui error between Begin and End still Ends the window
+def s_v24_13():
+    for _ in range(120): tick()                                   # old HUD items gone
+    G.onPlayerJoin(1)                                             # rules window open
+    deliver_to_client("kkLap_hud", json.dumps({"msg": "ready line"}))
+    C.globals().ui_imgui["failText"] = True
+    m0 = len(DRAWN); tick()
+    d = list(DRAWN.values())[m0:]
+    def ended(prefix):
+        i = max((k for k, x in enumerate(d) if x.startswith(prefix)), default=None)
+        return i is not None and i + 1 < len(d) and d[i + 1] == "end"
+    check(ended("begin ##kkLapHud") and ended("begin kkLap  v"), "v0.24 #13: a throw inside the HUD and the rules window still calls im.End (%s)" % d[:6])
+    C.globals().ui_imgui["failText"] = False; HUD["broken"] = False; rs.open = False
+    # the timer window had this since v0.23: still holds
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    drive(100, [(0, 0, 0), (50, 0, 0)])
+    for _ in range(120): tick()
+    C.globals().ui_imgui["failText"] = True
+    m0 = len(DRAWN); tick()
+    d = list(DRAWN.values())[m0:]
+    check(ended("begin ##kkLapTimer"), "v0.24 #13: the timer window too (%s)" % d[:4])
+    C.globals().ui_imgui["failText"] = False; HUD["broken"] = False
+    for _ in range(3): tick()
+guard("v0.24 #13", s_v24_13)
+
+# ---- 16: on|off commands with no argument show the value; BeamMP's unicycle is not a racer
+def s_v24_16():
+    before = {k: G.cfg[k] for k in ("autoStart", "markers", "announceSplits", "debug", "hud")}
+    mark = len(chat_out)
+    for c in ("/autostart", "/markers", "/announce", "/debug", "/hud"): chat(c)
+    after = {k: G.cfg[k] for k in before}
+    check(after == before and len([m for p, m in chat_out[mark:] if " is " in m and "on|off" in m]) == 5,
+          "v0.24 #16: /autostart /markers /announce /debug /hud with no argument show the value, change nothing (%s)" % after)
+    for c in ("/autostart on", "/markers on", "/debug on", "/hud on"): chat(c)   # put back whatever a bare command switched off
+    fresh_track([(0, 0, 0), (100, 0, 0)], own=(100, 102), park=(-30, 0, 0))
+    jbeams[102] = "unicycle"; positions[102] = (1, 0, 0); velocities[102] = (2.0, 0.0, 0.0)
+    X0 = len(events_to_server)
+    for _ in range(5): tick()
+    drive(102, [(50, 0, 0), (100, 0, 0), (50, 0, 0)] + [(50, 0, 0)] * 60 + [(0, 0, 0)])
+    sent = [n for n, d in events_to_server[X0:] if n in ("kkLap_bubble", "kkLap_cross") and json.loads(d).get("vid") == 102]
+    check(sent == [] and "1:102" not in bubble_keys(), "v0.24 #16: the unicycle walks through the bubble and both checkpoints: no bubble entry, no crossing (%s)" % sent)
+    del jbeams[102]; del positions[102]; own_vids[:] = [100]
+guard("v0.24 #16", s_v24_16)
+
+# ---- 11: a hot reload of main.lua re-sends the config; a client caught mid-countdown can honk again
+def s_v24_11():
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0.0)
+    for _ in range(3): tick()
+    mark = len(chat_out); M.onHorn(100)
+    for _ in range(20): tick()                                    # 1 s into the countdown: the client is counting
+    check(said(mark, "race start in"), "v0.24 #11: (setup) countdown running")
+    E0 = len(events_to_client)
+    S.execute(SERVER.read_text()); G.onInit()                     # the plugin file is reloaded (server hot reload)
+    check(any(p == -1 and n == "kkLap_cfg" for p, n, _ in events_to_client[E0:]), "v0.24 #11: a reload with players on sends the config to everyone")
+    for _ in range(40): tick()
+    X0 = len(events_to_server); mark = len(chat_out); M.onHorn(100)
+    check(any(n == "kkLap_arm" for n, _ in events_to_server[X0:]) and said(mark, "race start in"),
+          "v0.24 #11: after the reload the honk is heard and starts a countdown (client no longer stuck counting)")
+    for _ in range(130): tick()
+    velocities[100] = (27.78, 0.0, 0.0)
+guard("v0.24 #11", s_v24_11)
+check(not dropped, "no client event was dropped by the server (after the v0.24 scenarios)")
 
 print()
 print("bench dir:", work)

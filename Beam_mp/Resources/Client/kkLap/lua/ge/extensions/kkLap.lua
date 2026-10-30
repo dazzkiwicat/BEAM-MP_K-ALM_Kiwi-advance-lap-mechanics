@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.23'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.24'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -24,6 +24,7 @@ local musicAutoCheck         -- defined in the music block, used by onVehicleSpa
 local musicRetry = { t = 0, tries = 0 }   -- autoplay retries (v0.22): every 3 s, at most 10, reset by each config
 local tgt      = {}          -- the targets in order: checkpoints, then the separate finish line if there is one
 local lastDbg  = 0
+local lastTrackRev = nil     -- the server's cfg.trackRev we last reset our lap state for (v0.24)
 
 local function dbg(msg)
     log('I', 'kkLap', '[KKLAP] ' .. msg)   -- 'I' not 'D': BeamMP itself only logs E/W/I
@@ -60,6 +61,19 @@ local function hudTick(dt)
     end
 end
 M.hudState = hud          -- for the bench
+
+-- ImGui's Text, TextWrapped and TextColored are printf-style: a '%' in a rule line or a player's
+-- name ("%s") read arguments that are not there (review, v0.24). TextUnformatted (BeamNG's stock
+-- gui.lua uses it) takes the string as it is; probed once, like the big-text method. The
+-- printf-style calls that are left get every % doubled, which printf prints as one.
+local function imEsc(t) return (tostring(t):gsub('%%', '%%%%')) end
+local function imText(im, t)
+    if hud.unformatted == nil then
+        hud.unformatted = pcall(function() assert(type(im.TextUnformatted) == 'function') end)
+        dbg('imgui plain text uses ' .. (hud.unformatted and 'TextUnformatted' or 'Text, percent signs doubled'))
+    end
+    if hud.unformatted then im.TextUnformatted(tostring(t)) else im.Text(imEsc(t)) end
+end
 
 local function toast(msg, ttl)
     -- BeamNG UI message, small, top left. Same call BeamMP's own MPVehicleGE.lua uses.
@@ -145,7 +159,17 @@ local function onCfg(data)
     if d.yourPid ~= nil then M.myPid = d.yourPid end   -- server stamps the receiver's pid on a direct send
     cfg = d
     if cfg.markers == nil then cfg.markers = true end   -- config.json from before v0.4.0
-    for vid in pairs(clocks) do clocks[vid] = nil end; realtime('')   -- track changed or reset: clocks off
+    if type(cfg.checkpoints) ~= 'table' then cfg.checkpoints = {} end
+    -- v0.24: only a NEW track revision (a track change, /reset, a server (re)load) drops the lap state.
+    -- Any other push (/hud, /set, /music ...) keeps every lap running: before, it wiped the client's
+    -- lap while the server kept its run, and the next line crossing was "wrong cp" (review, 30/10).
+    local newTrack = (d.trackRev == nil) or (d.trackRev ~= lastTrackRev)   -- nil: a pre-0.24 server, always reset
+    lastTrackRev = d.trackRev
+    counting = false      -- the server re-sends kkLap_count each second of a countdown; a reload mid-countdown left this on for good
+    if newTrack then
+        for vid in pairs(clocks) do clocks[vid] = nil end; realtime('')   -- track changed or reset: clocks off
+        state = {}                                    -- checkpoints changed, start fresh
+    end
     if cfg.lineStyle == nil then cfg.lineStyle = 'paint' end
     musicRetry.t, musicRetry.tries = 0, 0   -- a new config = a fresh set of autoplay retries
     musicAutoCheck()      -- starts, keeps, or clears the autoplay track (music block below)
@@ -154,9 +178,8 @@ local function onCfg(data)
     if cfg.finish then tgt[#tgt + 1] = cfg.finish end     -- point-to-point: finish is the last target
     buildLine()
     if draw.ok then buildColours(cfg.markerAlpha) end   -- /lap set markerAlpha takes effect here
-    state = {}                                    -- checkpoints changed, start fresh
-    dbg(string.format('cfg received: %d checkpoints, debug=%s, markers=%s',
-        #cfg.checkpoints, tostring(cfg.debug), tostring(cfg.markers)))
+    dbg(string.format('cfg received: %d checkpoints, debug=%s, markers=%s, track rev %s%s',
+        #cfg.checkpoints, tostring(cfg.debug), tostring(cfg.markers), tostring(d.trackRev), newTrack and ' (new: lap state reset)' or ''))
 end
 
 local function sectorsText(list)
@@ -231,9 +254,30 @@ local function insideCp(veh, cp)
     return (dx*dx + dy*dy + dz*dz) <= (cp.r * cp.r)
 end
 
+-- BeamMP's walking "unicycle" (the player on foot; MPVehicleGE.lua checks the same name) is an own
+-- vehicle too: it must not be timed or counted in the start bubble (v0.24). getJBeamFilename: BeamNG GE.
+local function isUnicycle(veh)
+    local ok, j = pcall(function() return veh:getJBeamFilename() end)
+    return ok and j == 'unicycle'
+end
+
+-- a new lap starts here (line, restart, GO): a teleport still waiting to be judged happened
+-- before it, so it is not this lap's (v0.24; else a car put on the line by a teleport lost its first lap)
+local function slewDone(s, p)
+    s.slewT = 0
+    if p then s.lastPos = { x = p.x, y = p.y, z = p.z } end
+end
+
 local function onCount(data)
     local d = jsonDecode(data)
     if not d then return end
+    if d.cancel then                                 -- /race stop (v0.24): the countdown is off, honk again
+        counting = false
+        for _, s in pairs(state) do s.armed = false end
+        toast('countdown cancelled', 3)
+        return
+    end
+    if not tonumber(d.n) then return end
     if not counting then
         -- countdown just began: remember which own cars are on the line, for the jump-start call
         local cp1 = cfg.checkpoints[1]
@@ -276,7 +320,7 @@ local function onGo(data)
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
         local veh = be:getObjectByID(vid)
         local s   = state[vid]
-        if veh and s and insideCp(veh, cp1) then
+        if veh and s and not isUnicycle(veh) and insideCp(veh, cp1) then
             local vx, vy, vz = veh:getVelocityXYZ()
             TriggerServerEvent('kkLap_cross', jsonEncode({ vid = vid, cp = 1, go = true,
                 kph = math.sqrt(vx*vx + vy*vy + vz*vz) * 3.6 }))
@@ -286,6 +330,7 @@ local function onGo(data)
             s.flashCp = 1; s.flashT = 1.5
             s.armed   = false
             s.invalid = false; s.physResets = 0
+            slewDone(s, veh:getPosition())
             dbg(string.format('vid %d GO start', vid))
         end
     end
@@ -344,8 +389,11 @@ musicAutoCheck = function()
         if music.path and music.loop then musicStop(); dbg('music autoplay cleared') end
         return
     end
-    if music.path == want and music.active then return end                  -- already playing it
-    musicPlay(want, tonumber(cfg.musicVolume) or 0.5, true, nil)
+    -- already playing it, from the same /music command (musicNo: a new /music restarts it, v0.24, as the
+    -- config is now the only message a looping /music sends)
+    if music.path == want and music.active and music.no == cfg.musicNo then return end
+    musicPlay(want, tonumber(cfg.musicVolume) or 0.5, true, tonumber(cfg.musicSeconds))
+    music.no = cfg.musicNo
     dbg('music autoplay ' .. want .. (music.active and '' or ' (refused, will retry)'))
 end
 local function musicRetryTick(dt)
@@ -380,7 +428,9 @@ musicPlay = function(path, vol, loop, seconds)
     end)
     if not ok then
         dbg('music createSource failed (' .. tostring(err) .. '), trying playOnce')
-        music.id = nil
+        -- the source may exist even though the object lookup or setVolume failed: free it (v0.24, it leaked)
+        if music.id then pcall(Engine.Audio.deleteSource, music.id) end
+        music.id, music.src = nil, nil
         ok, err = pcall(function() Engine.Audio.playOnce('AudioGui', path, { volume = vol }) end)
     end
     music.active = ok and true or false            -- v0.22: true only if a play call worked, so autoplay retries
@@ -473,25 +523,30 @@ local function drawRules()
     if not rules.open then return end
     local im = ui_imgui
     if not im then return end
-    local ok = pcall(function()
+    local began = false                            -- a throw between Begin and End must still End (v0.24)
+    local ok, err = pcall(function()
         im.SetNextWindowSize(im.ImVec2(560, 0), im.Cond_FirstUseEver)
         im.SetNextWindowBgAlpha(0.85)
-        im.Begin('kkLap  v' .. M.VERSION .. '  -  rules and commands')
+        im.Begin('kkLap  v' .. M.VERSION .. '  -  rules and commands'); began = true
         im.TextColored(im.ImVec4(0.3, 1.0, 0.3, 1.0), 'RULES')
-        for _, l in ipairs(rules.lines) do im.TextWrapped('- ' .. l) end
+        -- TextWrapped is printf-style: imEsc. (TextUnformatted would not wrap in the 560 px window.)
+        for _, l in ipairs(rules.lines) do im.TextWrapped(imEsc('- ' .. l)) end
         im.Separator()
         im.TextColored(im.ImVec4(0.3, 0.8, 1.0, 1.0), 'COMMANDS (type in chat)')
-        for _, l in ipairs(rules.player) do im.TextWrapped(l) end
+        for _, l in ipairs(rules.player) do im.TextWrapped(imEsc(l)) end
         if rules.admin then
             im.Separator()
             im.TextColored(im.ImVec4(1.0, 0.7, 0.3, 1.0), 'ADMIN')
-            for _, l in ipairs(rules.admin) do im.TextWrapped(l) end
+            for _, l in ipairs(rules.admin) do im.TextWrapped(imEsc(l)) end
         end
         im.Separator()
         if im.Button('Close   (or type /rules)') then rules.open = false end
-        im.End()
+        im.End(); began = false
     end)
-    if not ok then rules.open = false; dbg('rules window failed to draw, imgui call mismatch') end
+    if not ok then
+        if began then pcall(im.End) end
+        rules.open = false; dbg('rules window failed to draw, imgui call mismatch: ' .. tostring(err))
+    end
 end
 M.rulesState = rules      -- for the bench
 
@@ -526,11 +581,11 @@ local function hudText(im, text, colour, scale)
         dbg('HUD big text uses ' .. hud.bigMode)
     end
     if hud.bigMode == 'scale' then
-        im.SetWindowFontScale(scale or 3); im.TextColored(colour, text); im.SetWindowFontScale(1)
+        im.SetWindowFontScale(scale or 3); im.TextColored(colour, imEsc(text)); im.SetWindowFontScale(1)
     elseif hud.bigMode == 'font3' and pcall(im.PushFont3, 'cairo_semibold_large') then
-        im.TextColored(colour, text); im.PopFont()
+        im.TextColored(colour, imEsc(text)); im.PopFont()
     else
-        im.TextColored(colour, text)
+        im.TextColored(colour, imEsc(text))      -- TextColored is printf-style too (v0.24)
     end
 end
 local function hudBig(im, text) hudText(im, text, hudColour(im, text), 3) end
@@ -545,20 +600,24 @@ local function drawHud()
         if it.big then big = big or it
         elseif #small < 4 then table.insert(small, 1, it) end   -- up to 4, oldest on top
     end
+    local began = false                            -- a throw between Begin and End must still End (v0.24)
     local ok, err = pcall(function()
         local io = im.GetIO()
         im.SetNextWindowPos(im.ImVec2(io.DisplaySize.x / 2, 40), im.Cond_Always, im.ImVec2(0.5, 0))
-        im.Begin('##kkLapHud', nil, hudFlags(im))
+        im.Begin('##kkLapHud', nil, hudFlags(im)); began = true
         if big then hudBig(im, big.text) end
-        for _, it in ipairs(small) do im.Text(it.text) end
+        for _, it in ipairs(small) do imText(im, it.text) end   -- player names can carry a % (v0.24)
         -- imgui.GetWindowHeight: used by BeamMP's chat.lua and the stock gui.lua. If the call is
         -- missing, a rough guess (16 px font) so the timer still sits below the messages.
         local okH, h = pcall(im.GetWindowHeight)
         if not (okH and type(h) == 'number') then h = (big and 56 or 0) + #small * 20 + 16 end
         hud.bottom = 40 + h
-        im.End()
+        im.End(); began = false
     end)
-    if not ok then hud.broken = true; dbg('HUD failed to draw, imgui call mismatch: ' .. tostring(err)) end
+    if not ok then
+        if began then pcall(im.End) end
+        hud.broken = true; dbg('HUD failed to draw, imgui call mismatch: ' .. tostring(err))
+    end
 end
 
 -- ----------------------------------------------------- race timer (v0.23)
@@ -611,7 +670,7 @@ local function drawTimer(c)
         if c.gap then
             hudText(im, c.gap.text, c.gap.slower and im.ImVec4(1, 0.35, 0.35, 1) or im.ImVec4(0.35, 1, 0.35, 1), 2)
         end
-        if c.best then im.Text('best ' .. M.fmt(c.best)) end
+        if c.best then imText(im, 'best ' .. M.fmt(c.best)) end
         im.End(); begun = false
     end)
     if not ok then
@@ -701,12 +760,15 @@ local function onUpdate(dt)
 
     local n = #tgt
     if n == 0 then return end
+    -- a finish line with no start (an /undo or a hand-edited config.json): nothing to time, and every
+    -- cfg.checkpoints[1] below would throw each frame (v0.24). Music, HUD and the sweep above still run.
+    if not cfg.checkpoints[1] then return end
 
     -- BeamMP: table of the vehicles THIS client owns, keyed by game vehicle id.
     -- Split-screen = two entries. Remote players' cars are not in it.
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do
         local veh = be:getObjectByID(vid)             -- BeamNG: id -> object
-        if veh then
+        if veh and not isUnicycle(veh) then           -- on foot: not a racer, not in the bubble roster (v0.24)
             local s  = state[vid] or { nextCp = 1, inside = false, started = false, flashCp = nil, flashT = 0, armed = false }
             state[vid] = s
             local cp = tgt[s.nextCp]
@@ -724,12 +786,17 @@ local function onUpdate(dt)
                 if jump > 100 * dt + 150 then
                     -- a backstop for teleports with no reset event. Coarse on purpose: recover and
                     -- respawn fire the reset callback and are judged there at 2 m.
-                    s.slewT = 1.0; s.slewDist = jump              -- wait 1 s for a reset event before judging
+                    -- Armed ONCE (v0.24): re-arming every frame meant a car that stayed where it was
+                    -- teleported to never got judged at all (review, 30/10).
+                    if not (s.slewT and s.slewT > 0) then s.slewT = 1.0; s.slewDist = jump end   -- wait 1 s for a reset event
                 else
                     s.lastPos.x, s.lastPos.y, s.lastPos.z = p.x, p.y, p.z
-                    if s.slewT and s.slewT > 0 then
-                        s.slewT = s.slewT - dt
-                        if s.slewT <= 0 then M.invalidate(vid, string.format('moved %.0f m in one frame', s.slewDist or 0)) end
+                end
+                if s.slewT and s.slewT > 0 then           -- counts down every frame, moved or not
+                    s.slewT = s.slewT - dt
+                    if s.slewT <= 0 then
+                        M.invalidate(vid, string.format('moved %.0f m in one frame', s.slewDist or 0))   -- no-op before the first crossing
+                        s.lastPos.x, s.lastPos.y, s.lastPos.z = p.x, p.y, p.z                     -- judged: the new spot is home
                     end
                 end
             else
@@ -757,6 +824,7 @@ local function onUpdate(dt)
                 s.nextCp = (n > 1) and 2 or 1
                 s.started = true; s.invalid = false; s.physResets = 0
                 s.flashCp = 1; s.flashT = 1.5
+                slewDone(s, p)
                 cp = tgt[s.nextCp]
                 inside = insideCp(veh, cp); s.inside = inside    -- re-aim at the new target before the edge test below
             end
@@ -779,10 +847,13 @@ local function onUpdate(dt)
                 dbg(string.format('vid %d entered cp %d', vid, s.nextCp))
                 s.started = true                   -- from now on, passed checkpoints are drawn as done
                 s.flashCp = s.nextCp; s.flashT = 1.5   -- and this one flashes white for 1.5 s
-                if s.nextCp == 1 or (cfg.finish and s.nextCp == n) then s.invalid = false; s.physResets = 0 end   -- new lap: clean slate
+                if s.nextCp == 1 or (cfg.finish and s.nextCp == n) then s.invalid = false; s.physResets = 0; slewDone(s, p) end   -- new lap: clean slate
                 if cfg.finish and s.nextCp == n then s.started = false end   -- crossed the finish: course done, back to fresh
                 s.nextCp = (s.nextCp % n) + 1
-                inside   = false   -- new target sphere: start outside it, or touching spheres get missed (bench, 26/10)
+                -- new target sphere: start outside it, or touching spheres get missed (bench, 26/10).
+                -- Not with ONE checkpoint: the target is the same sphere, and the car must leave it first,
+                -- else it "crossed" again every frame it sat inside (v0.24).
+                if n > 1 then inside = false end
             end
             s.inside = inside
             if s.flashT > 0 then s.flashT = s.flashT - dt end
@@ -933,7 +1004,14 @@ M.onUpdate          = onUpdate
 M.onPreRender       = onPreRender
 M.onVehicleSpawned  = onVehicleSpawned
 M.onVehicleDestroyed = onVehicleDestroyed
-M.onExtensionUnloaded = function() removeLine(); musicStop() end
-M.onClientEndMission  = function() removeLine(); musicStop() end   -- BeamNG: leaving the level: line gone anyway, music must stop (Darren, 27/10)
+-- leaving: the music must stop AND stay stopped. v0.22's autoplay retry restarted it 3 s later
+-- (review, v0.24): the retries are spent and the autoplay forgotten until the next config.
+local function silence()
+    removeLine(); musicStop()
+    musicRetry.tries = 10
+    cfg.musicAuto = nil
+end
+M.onExtensionUnloaded = silence
+M.onClientEndMission  = silence   -- BeamNG: leaving the level: line gone anyway, music must stop (Darren, 27/10)
 M.myPid             = nil     -- our player id, stamped by the server on the config it sends us
 return M
