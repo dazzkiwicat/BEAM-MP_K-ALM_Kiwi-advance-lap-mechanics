@@ -506,6 +506,74 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   is usable; the markers are still UNCHECKED.
   Next release: tag it with the version (kkLap-v0.4.1) so two releases never share a name.
 
+## Lessons baked from the v0.3.0 to v0.22 thread (30/10, before a fresh session)
+
+What five live days taught that the bench could not. All three v0.22 bugs were LIFECYCLE faults,
+not logic faults: a car that vanished without saying goodbye, a hook that fires before the data
+it needs exists, and a screen that had no room for the UI apps the messages relied on. The bench
+models one tidy client that never dies and always has a car. Rules that came out of it:
+
+1. Any roster keyed by a vehicle id needs a prune path for ids that vanish without a leave
+   message. Ctrl+R gives a NEW game vehicle id; the old one never sends "inside=false".
+   Same rule as "write once and don't delete" seen from the other side: a delete that never
+   arrives is a silent failure.
+2. A hook firing is not the same as the data being ready. BeamMP adds your own car to
+   getOwnMap() only after the server echoes the spawn, which is AFTER BeamNG's onVehicleSpawned.
+   Gate on the thing you need (a car object), not on a map filled by someone else later, or poll.
+3. Never depend on an optional UI app for a message that decides a race. The "Race Countdown"
+   and chat apps are layout choices on the player's PC; imgui is always there. Every flash goes
+   to both, and the HUD is the one we trust.
+4. A rule that needs everyone to act needs an exit for when someone won't. "Everyone honks" is
+   right as the default; "honk twice to go without them" is the governor, not a loophole.
+
+Working method that held up:
+- Brief file in the scratchpad, Opus builds from it, bench + check_lua + zip run after, I review
+  the diff stat and the bench totals, then push. Deciding thread stays small. (Darren, 30/10:
+  "get opus to do these tasks, be token friendly".)
+- Every API fact labelled: CONFIRMED (seen live or in the stock/BeamMP source in the scratchpad
+  ref/ and research/dl/ folders) or UNCHECKED. Live confirmations from Darren are the only thing
+  that clears an UNCHECKED; a clean bench run never does.
+- Darren edits the root README on GitHub web while I work. Push rejected = fetch + merge --no-edit,
+  never rebase, every time. Happened three times, never lost anything.
+- Patch scripts assert their anchors and abort before writing. Four anchor misses, zero half-patched files.
+- The window: /compact squeezes it; "collapse" is not a command. STATE.md is the resume point,
+  and a fresh session starts by reading its top section and the last dated block.
+
+Traps that bit once and are now coded against (keep, do not re-learn):
+- Server event names never contain ':' (the wire splits at the first colon).
+- nowMs() rounds; floor() lost 1 ms per lap.
+- GO and restart branches sit ABOVE the wrong-checkpoint check in onCross; a car rolling into
+  the bubble has already crossed cp1.
+- Vehicle onReset fires AFTER a recover has moved the car, so "moved > 2 m" is a position reset,
+  else a physics reset. Confirmed live 27/10.
+- lupa: list(luatable) gives keys, use .values(); the client runtime is luajit21.LuaRuntime.
+- Forward-declare locals used before their definition (buildLine, musicAutoCheck).
+- Music plays through the game's "Other" slider; the file never enters git or the code zip.
+
+Still UNCHECKED live after v0.22 ships (test in this order, cheapest first):
+ 1. Music starts on first join, before or at the first car.
+ 2. HUD shows the countdown in a narrow window with no UI apps on the layout.
+ 3. Two cars: second one Ctrl+R's away, countdown starts for the first.
+ 4. Two cars: second never honks, first honks twice, countdown starts.
+ 5. v0.20 deltas, wrong-way guard, id-keyed board; race numbers; point-to-point /finish; points
+    display with three drivers; stoppable-music path vs playOnce fallback.
+
+Parked ideas, with the reason: ring of balls at the start (blocked the view); YouTube stream
+(server has no speakers, no HTTP in the server API); live stream via be:executeJS (possible,
+nobody asked yet); CONTRIBUTING/issues/releases (Darren, 30/10: "forget about the contributing").
+Open for Darren: rewrite history to remove author emails or leave it; set the four poster secrets.
+
+Log evidence (30/10, from the server's own kkLap.log, 26-28/10, 20,383 lines; files stay in the
+upload folder, never in the repo): bug 1 = player 1's vehicle id changed 192530 -> 198855 -> 201227
+on 28/10 21:32-21:41 (three Ctrl+R), then 14 honks from both cars and 0 countdowns; the one
+countdown of the evening was 21:28, before the respawns. Bug 2 = cfg received 21:08/21:09, music
+started 21:22/21:37. BeamMP Server.log: no kkLap errors in 5 days; "Invalid code got in Identify"
+and the heartbeat timeout are BeamMP's own, pre-date the mod (Darren).
+SECURITY 30/10: ServerConfig.toml with the live AuthKey was uploaded into this session's upload
+folder. Not in git, not quoted anywhere. Told Darren to have the owner regenerate it at keymaster.
+Web leaderboard: Beam_mp/leaderboard/ (index.html reads times.json; README with the Caddy
+read-only mount for the owner). Not deployed, UNCHECKED on a real host.
+
 ## Community
 Darren has run a BeamMP server for a few years and wants this built for the community,
 with more people involved. Keep the README readable by a server owner who doesn't code.

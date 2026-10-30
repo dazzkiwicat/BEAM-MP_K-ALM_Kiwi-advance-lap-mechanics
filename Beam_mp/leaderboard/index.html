@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kkLap leaderboard</title>
+<style>
+  /* One file, no build step. Reads times.json from the same folder every 30 seconds. */
+  :root { --bg:#111; --fg:#eee; --dim:#888; --row:#1a1a1a; --gold:#e5c04b; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui, sans-serif; padding:16px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:12px; }
+  table { border-collapse:collapse; width:100%; max-width:900px; }
+  th, td { padding:8px 10px; text-align:left; white-space:nowrap; }
+  th { color:var(--dim); font-weight:600; font-size:13px; border-bottom:1px solid #333; }
+  tr:nth-child(even) td { background:var(--row); }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.top td { color:var(--gold); }
+  .err { color:#e66; }
+</style>
+</head>
+<body>
+<h1>kkLap leaderboard</h1>
+<div class="sub" id="sub">loading times.json…</div>
+<table>
+  <thead><tr>
+    <th class="num">#</th><th>Driver</th><th class="num">Best lap</th><th class="num">Laps</th>
+    <th class="num">km/h at line</th><th class="num">Resets</th><th class="num">Points</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<script>
+// Same rules as the server: points = floor(100 * top / yours), shown once 3 drivers have a time.
+const POINTS_MIN_DRIVERS = 3;
+function fmt(ms) {
+  if (!ms || ms <= 0) return '-';
+  const m = Math.floor(ms / 60000), s = Math.floor(ms % 60000 / 1000), t = ms % 1000;
+  return (m ? m + ':' : '') + String(s).padStart(m ? 2 : 1, '0') + '.' + String(t).padStart(3, '0');
+}
+async function load() {
+  const sub = document.getElementById('sub'), rows = document.getElementById('rows');
+  try {
+    const r = await fetch('times.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const board = await r.json();                    // { "id:123": {name,bestMs,laps,kph,resets}, ... }
+    const list = Object.values(board).filter(e => e && e.bestMs > 0).sort((a, b) => a.bestMs - b.bestMs);
+    const top = list.length ? list[0].bestMs : 0, showPts = list.length >= POINTS_MIN_DRIVERS;
+    rows.innerHTML = list.map((e, i) => `<tr class="${i === 0 ? 'top' : ''}">
+      <td class="num">${i + 1}</td><td>${String(e.name || '?').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
+      <td class="num">${fmt(e.bestMs)}</td><td class="num">${e.laps || 0}</td>
+      <td class="num">${e.kph ? Math.round(e.kph) : '-'}</td><td class="num">${e.resets || 0}</td>
+      <td class="num">${showPts ? Math.floor(100 * top / e.bestMs) : '-'}</td></tr>`).join('');
+    sub.textContent = list.length + ' driver' + (list.length === 1 ? '' : 's') + ' · updated ' + new Date().toLocaleTimeString()
+      + (showPts ? '' : ' · points show once ' + POINTS_MIN_DRIVERS + ' drivers have a time');
+  } catch (err) {
+    sub.innerHTML = '<span class="err">could not read times.json: ' + err.message + '</span>';
+  }
+}
+load(); setInterval(load, 30000);
+</script>
+</body>
+</html>

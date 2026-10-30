@@ -206,6 +206,11 @@ log, jsonEncode/jsonDecode, ffi.C.BNG_DBG_DRAW_Sphere, ffi.C.BNG_DBG_DRAW_TextAd
 window and HUD), and the onVehicleSpawned / onVehicleDestroyed hooks (BeamMP's MPVehicleGE.lua uses the same names).
 Server file is 100% BeamMP server API (MP.*, Util.Json*).
 
+## Web leaderboard
+`leaderboard/index.html` reads `times.json` and shows rank, best lap, laps, speed at the line,
+resets and points, refreshing every 30 seconds. `leaderboard/README.md` has the one Docker line
+(Caddy, read-only mount of times.json) for whoever runs the host. Nothing writes back to the server.
+
 ## Licence
 MIT, see LICENSE at the repo root. Use it, change it, ship it on your own server; keep the
 copyright line. The music file is yours, not ours, and never lives in this repo.
