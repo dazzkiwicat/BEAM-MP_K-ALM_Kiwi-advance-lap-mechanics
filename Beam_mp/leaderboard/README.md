@@ -47,6 +47,10 @@ Check: `ls -l /opt/kklap-web/` shows one file.
 
 ## Step 3: start the web server
 
+Shortcut: `sudo ./kklap-web.sh <uuid>` from this folder does steps 2 and 3 in one go and prints
+the check. Rerun it with the new uuid if the game server is ever recreated. The manual version:
+
+
 One container, restarts itself with the machine, mounts the two files read-only.
 Replace `<uuid>` with the one from step 1.
 
@@ -81,6 +85,10 @@ Caddy does the certificate on its own.
   recreated (a `lap clear`, or a fresh install), run `sudo docker restart kklap-web` once.
 - **Update the page.** Copy the new `index.html` over the old one and `sudo docker restart kklap-web`.
 - **Remove it.** `sudo docker rm -f kklap-web`. Nothing else was changed.
+- **Game server recreated in the panel.** Its uuid changes and the old board is gone with the
+  volume. Run `sudo ./kklap-web.sh <new uuid>` once.
+- **Permissions.** Caddy runs as root inside the container and Pterodactyl leaves the files
+  world-readable, so reads work. If `times.json` ever serves empty, `ls -l` on it shows the mode.
 
 ## Why it is safe
 
