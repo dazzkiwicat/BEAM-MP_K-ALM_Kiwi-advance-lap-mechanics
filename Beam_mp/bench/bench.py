@@ -31,6 +31,7 @@ server_log = []                          # print() lines from the server
 client_log = []                          # log() lines from the client
 events_to_client = []                    # (pid, name, json) sent by server
 dropped          = []                    # client events the server had no handler for
+events_to_server = []                    # (name, data) sent by the client
 
 # ------------------------------------------------------------------ server state
 S = lua53.LuaRuntime(unpack_returned_tuples=True)
@@ -95,6 +96,7 @@ def c_trigger_server(name, data):
     wire = "E:" + name + ":" + data
     sep = wire.find(":", 2)
     wname, wdata = wire[2:sep], wire[sep+1:]
+    events_to_server.append((wname, wdata))
     fn = s_handlers.get(wname)
     if not fn:
         dropped.append(wname)                  # the real server drops it silently
@@ -132,6 +134,36 @@ C.globals().log = lambda lvl, origin, msg: client_log.append("[%s] %s" % (lvl, m
 C.globals().vec3 = lambda t: t                  # vec3(x) wrapper: the stub tables already have x,y,z
 C.globals().jsonEncode = lambda t: json.dumps(lua_to_py(t))
 C.globals().jsonDecode = lambda s: py_to_lua(C, json.loads(s))
+# Audio stub (v0.22): createSource gives no source object, so the client falls back to
+# playOnce, which works unless Engine.Audio.fail > 0 (then it throws and counts down).
+# imgui stub: just enough of ui_imgui for the rules window and the HUD to run their draw
+# code; every Text call is recorded so the bench can see what reached the screen.
+C.execute("""
+Engine = { Audio = { fail = 0, plays = {},
+    createSource = function(ch, path) return nil end,
+    deleteSource = function(id) end,
+    playOnce = function(ch, path, opts)
+        if Engine.Audio.fail > 0 then Engine.Audio.fail = Engine.Audio.fail - 1; error('stub: audio not ready') end
+        table.insert(Engine.Audio.plays, path)
+    end } }
+local drawn = {}
+ui_imgui = { drawn = drawn, scale = 1,
+    Cond_Always = 1, Cond_FirstUseEver = 4,
+    WindowFlags_NoTitleBar = 1, WindowFlags_NoResize = 2, WindowFlags_NoMove = 4, WindowFlags_NoBackground = 128,
+    WindowFlags_NoInputs = 512, WindowFlags_NoFocusOnAppearing = 4096,
+    ImVec2 = function(x, y) return { x = x, y = y } end,
+    ImVec4 = function(r, g, b, a) return { r, g, b, a } end,
+    GetIO = function() return { DisplaySize = { x = 960, y = 1080 } } end,   -- half of a 1920 screen: split screen
+    SetNextWindowPos = function() end, SetNextWindowSize = function() end, SetNextWindowBgAlpha = function() end,
+    Begin = function(name) table.insert(drawn, 'begin ' .. name) end, End = function() end,
+    SetWindowFontScale = function(f) ui_imgui.scale = f end,
+    Text = function(t) table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. t) end,
+    TextColored = function(c, t) table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. t) end,
+    TextWrapped = function(t) end, Separator = function() end, Button = function() return false end,
+}
+""")
+AUDIO = C.globals().Engine["Audio"]
+DRAWN = C.globals().ui_imgui["drawn"]
 
 # ------------------------------------------------------------------ load real code
 work = pathlib.Path(tempfile.mkdtemp(prefix="kklap-bench-"))
@@ -331,10 +363,24 @@ for _ in range(10): tick()
 M.onHorn(100)                                                 # vehicle Lua reports the horn; car 100 is on the line
 check(any("honked on the line" in l for l in client_log[mark_cl:]), "a honk inside the start bubble asks for a countdown")
 check(any(pid == -1 and "ready  (1 of 2 in the start bubble" in m for pid, m in chat_out[mark_chat:]), "with two cars in the bubble one honk is not enough: 1 of 2 ready")
+HUD = M.hudState
+def hud_items(): return [(it["text"], bool(it["big"])) for it in HUD["items"].values()]
+check(any(n == "kkLap_hud" for (_, n, _) in events_to_client) and any(t.startswith("Darren ready  (1 of 2") and not big for t, big in hud_items()),
+      "the 'ready 1 of 2' line reaches the on-screen HUD (kkLap_hud event lands in the queue)")
 check(not any("race start in" in m for _, m in chat_out[mark_chat:]), "no countdown until everyone in the bubble has honked")
 M.onHorn(101)                                                 # second car honks: everyone ready
 check(any(pid == -1 and "race start in 5" in m and "all 2 ready" in m for pid, m in chat_out[mark_chat:]), "second honk starts the countdown for the group")
-for _ in range(110): tick()                                   # 5.5 s: 4,3,2,1, GO
+hud_big = []; drawn_mark = len(DRAWN)
+for _ in range(110):                                          # 5.5 s: 4,3,2,1, GO
+    tick()
+    b = [t for t, big in hud_items() if big]
+    if b and (not hud_big or hud_big[-1] != b[-1]): hud_big.append(b[-1])
+check(hud_big[:6] == ["5", "4", "3", "2", "1", "GO!"], "HUD shows the countdown digits and GO as its big line (%s)" % hud_big[:6])
+drawn = list(DRAWN.values())[drawn_mark:]
+check(any(d == "x3 GO!" for d in drawn) and any(d.startswith("begin ##kkLapHud") for d in drawn), "HUD draw code runs and draws GO at 3x scale (imgui stub)")
+check(any("HUD big text uses scale" in l for l in client_log), "which big-text method worked is logged once")
+check(any(t.startswith("race start in 5") for t, _ in hud_items()) or any(n == "kkLap_hud" and "race start in 5" in d for (_, n, d) in events_to_client),
+      "'race start in 5' goes to the HUD as well as chat")
 check(any(pid == -1 and m.endswith("GO!") for pid, m in chat_out[mark_chat:]), "GO announced to everyone")
 check(flashes[-6:] == ["5", "4", "3", "2", "1", "GO!"], "countdown flashed big 5..1 GO (%s)" % flashes[-6:])
 check(any("vid 100 GO start" in l for l in client_log[mark_cl:]) and any("vid 101 GO start" in l for l in client_log[mark_cl:]),
@@ -342,6 +388,8 @@ check(any("vid 100 GO start" in l for l in client_log[mark_cl:]) and any("vid 10
 gos = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_go"]
 t_go = gos[-1]["t"]
 for _ in range(20): tick()                                    # sit 1 s after GO: must NOT re-arm
+for _ in range(100): tick()                                   # 5 s more: every HUD item has run out
+check(not any(t in ("5", "4", "3", "2", "1", "GO!") for t, _ in hud_items()), "HUD items expire after their ttl (%s)" % hud_items())
 check(sum(1 for pid, m in chat_out[mark_chat:] if pid == -1 and "race start in" in m) == 1, "no second countdown from cars still parked after GO")
 velocities[100] = (27.78, 0.0, 0.0); velocities[101] = (27.78, 0.0, 0.0)
 before = len(laps())
@@ -365,6 +413,7 @@ for _ in range(10): tick()
 velocities[100] = (10.0, 0.0, 0.0); positions[100] = (20, 0, 0)   # drives off the line mid-countdown
 for _ in range(5): tick()
 check(any(pid == -1 and "jumped the start" in m for pid, m in chat_out[mark_chat:]), "driving off during the countdown is announced as a jump start")
+check(any("jumped the start" in t for t, _ in hud_items()), "the jump start reaches the HUD too")
 for _ in range(120): tick()                                   # let that countdown finish
 
 # ------------------------------------------------------------------ scenario 9: /lap start moves the line, /lap finish makes it point-to-point
@@ -395,13 +444,13 @@ chat("/lap reset")
 
 # ------------------------------------------------------------------ scenario 10: music is a broadcast, each client plays the zip file
 mark = len(client_log); chat("/lap music kiwi 0.3")
-check(any("art/sound/kkLap/kiwi.ogg vol 0.30" in l for l in client_log[mark:]), "/lap music reaches the client with the file and volume (no audio engine here, so it reports the failure)")
+check(any("art/sound/kkLap/kiwi.ogg vol 0.30" in l for l in client_log[mark:]), "/lap music reaches the client with the file and volume (stub audio: playOnce fallback)")
 check(any(pid == -1 and "music: kiwi" in m and "on repeat" in m for pid, m in chat_out), "music start announced to everyone, on repeat by default")
 mark = len(client_log); chat("/music set.mp3 0.3")
 check(any("art/sound/kkLap/set.mp3 vol 0.30" in l for l in client_log[mark:]), "a name with its own extension is used as given (mp3)")
 mark = len(client_log); chat("/music set.mp3 3")
 check(any("vol 3.00" in l for l in client_log[mark:]), "volume above 1 passes through as a boost")
-mark = len(client_log); chat("/music kiwi 0.3 3")            # no audio engine here: timed loop re-fires every 3 s
+mark = len(client_log); chat("/music kiwi 0.3 3")            # stub has no stoppable source: timed loop re-fires every 3 s
 for _ in range(70): tick()
 check(sum(1 for l in client_log[mark:] if "music looped (timed)" in l) == 1, "timed loop re-fires after the given seconds")
 mark = len(client_log); chat("/lap music stop")
@@ -416,6 +465,30 @@ M.onVehicleSpawned(100)                                       # a (re)spawned ow
 check(not any("music autoplay" in l for l in client_log[mark:]), "respawning while it plays does not restart it")
 chat("/music stop")
 check(json.load(open(cfgfile)).get("musicAuto") is None, "/music stop clears the autoplay")
+# v0.22 bug 2: autoplay waited for an own car, which BeamMP lists only after the server round
+# trip, so the first car never got music. Now the config alone starts it, car or no car.
+saved_own = own_vids[:]; own_vids[:] = []                      # joined, no car yet
+mark = len(client_log); plays = len(AUDIO["plays"])
+S.globals().cfg["musicAuto"] = "set.mp3"; S.globals().onGetCfg(1, "")   # server answers the client's config request
+check(list(AUDIO["plays"].values())[plays:] == ["art/sound/kkLap/set.mp3"] and any("music autoplay art/sound/kkLap/set.mp3" in l for l in client_log[mark:]),
+      "config with musicAuto arriving before any car starts the music on that tick")
+chat("/music stop")
+# the game refuses the first plays (audio not up yet): retried every 3 s, plays on the 3rd retry, then stops retrying
+AUDIO["fail"] = 3; mark = len(client_log); plays = len(AUDIO["plays"])
+S.globals().cfg["musicAuto"] = "kiwi"; S.globals().onGetCfg(1, "")   # first try fails here
+for _ in range(400): tick()                                    # 20 s
+lines = client_log[mark:]
+r3 = next((i for i, l in enumerate(lines) if "music autoplay retry 3 of 10" in l), None)
+check(r3 is not None and any("music playing art/sound/kkLap/kiwi.ogg" in l for l in lines[r3:r3 + 3]) and
+      not any("retry 4" in l for l in lines) and list(AUDIO["plays"].values())[plays:] == ["art/sound/kkLap/kiwi.ogg"],
+      "a refused autoplay is retried and plays on the 3rd retry, then retrying stops")
+chat("/music stop")
+AUDIO["fail"] = 1000; mark = len(client_log)                   # audio never works: 10 retries, then quiet until the next config
+S.globals().cfg["musicAuto"] = "kiwi"; S.globals().onGetCfg(1, "")
+for _ in range(800): tick()                                    # 40 s
+check(sum(1 for l in client_log[mark:] if "music autoplay retry" in l) == 10 and any("gave up after 10" in l for l in client_log[mark:]),
+      "autoplay gives up after 10 retries")
+AUDIO["fail"] = 0; chat("/music stop"); own_vids[:] = saved_own
 
 # ------------------------------------------------------------------ scenario 11: commands without the lap word
 mark = len(chat_out)
@@ -479,6 +552,72 @@ mark = len(server_log)
 chat("/lap markers off")
 check(any("markers=false" in l for l in server_log[mark:]), "/lap markers off is pushed to the client config")
 check(any("markers false" in m for _, m in chat_out), "chat confirms markers off")
+
+# ------------------------------------------------------------------ scenario 13: the start bubble never jams (v0.22 bug 1)
+# Live 30/10: two cars in the bubble, the second never honked or was respawned, the race
+# could never start. A car that leaves (prune, drive out, deletion) is re-counted at once;
+# a second honk from a ready car starts without the rest.
+chat("/lap markers on")
+def bubble_setup():
+    own_vids[:] = [100, 101]; seat0_vid[0] = 100
+    for _ in range(220): tick()                               # GO cooldown and any countdown long gone
+    positions[100] = (5, 0, 0); positions[101] = (7, 0, 0)     # both parked in the start bubble (start at x=5, r=8)
+    velocities[100] = (0.0, 0.0, 0.0); velocities[101] = (0.0, 0.0, 0.0)
+    chat("/lap reset")
+    for _ in range(10): tick()
+    M.onHorn(100)
+    return len(chat_out)
+def countdown_since(mark): return [m for pid, m in chat_out[mark:] if pid == -1 and "race start in" in m]
+def bubble_keys(): return set(S.globals().bubble.keys())
+
+# (1) car 2 disappears from the own map: the 1 s sweep drops it, tells the server, countdown starts
+mark = bubble_setup()
+check(any("ready  (1 of 2" in m for _, m in chat_out[mark - 2:]) and not countdown_since(mark), "two cars in the bubble, one honk: waiting for the second")
+mark_e = len(events_to_server)
+own_vids[:] = [100]
+for _ in range(25): tick()
+check(any(n == "kkLap_bubble" and '"vid": 101' in d and '"inside": false' in d for n, d in events_to_server[mark_e:]), "the sweep tells the server car 2 left the bubble")
+cd = countdown_since(mark)
+check(len(cd) == 1 and "last car left" in cd[0], "car 2 pruned: the countdown starts for the ready car (%s)" % cd)
+for _ in range(120): tick()
+
+# (2) car 2 sits there and never honks: car 1 honks twice
+mark = bubble_setup()
+M.onHorn(100)
+check(any(pid == -1 and "honked twice: starting without the rest" in m for pid, m in chat_out[mark:]) and len(countdown_since(mark)) == 1,
+      "a second honk from a ready car starts the countdown without the car that never honked")
+check(any("honked twice" in t for t, _ in hud_items()), "the honk-twice line reaches the HUD")
+for _ in range(120): tick()
+
+# (3) car 2 drives out of the bubble
+mark = bubble_setup()
+positions[101] = (300, 300, 0)
+for _ in range(3): tick()
+cd = countdown_since(mark)
+check(len(cd) == 1 and "last car left" in cd[0], "car 2 drives out: the countdown starts for the ready car")
+for _ in range(120): tick()
+positions[101] = (7, 0, 0)
+
+# (4) car 2 is deleted (Ctrl+R / removed): be:getObjectByID gives nil, BeamMP still lists it
+mark = bubble_setup()
+check("1:101" in bubble_keys(), "server has car 2 in the bubble before it is deleted")
+mark_e = len(events_to_server)
+del positions[101]                                            # stub be:getObjectByID(101) now returns nil
+for _ in range(25): tick()
+check(any(n == "kkLap_bubble" and '"vid": 101' in d and '"inside": false' in d for n, d in events_to_server[mark_e:]) and "1:101" not in bubble_keys(),
+      "deleted car: the sweep sends inside=false and the server drops it")
+check(len(countdown_since(mark)) == 1, "deleted car: the countdown starts for the ready car")
+for _ in range(120): tick()
+positions[101] = (7, 0, 0)
+
+# (5) the game's onVehicleDestroyed hook does it at once, no sweep needed
+mark = bubble_setup()
+mark_e = len(events_to_server)
+M.onVehicleDestroyed(101)
+check(any(n == "kkLap_bubble" and '"vid": 101' in d and '"inside": false' in d for n, d in events_to_server[mark_e:]) and len(countdown_since(mark)) == 1,
+      "onVehicleDestroyed tells the server straight away and the countdown starts")
+for _ in range(120): tick()
+check(not dropped, "no client event was dropped by the server (after the v0.22 scenarios)")
 
 print()
 print("bench dir:", work)

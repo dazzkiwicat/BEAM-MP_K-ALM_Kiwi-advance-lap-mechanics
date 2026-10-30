@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-26 by Claude. Current version: 0.3.0 (server main.lua and client zip share it). Branch: claude/blissful-mccarthy-eg6jed
+Updated: 2026-10-30 by Claude (v0.22). Earlier: 2026-10-26. Current version: 0.3.0 (server main.lua and client zip share it). Branch: claude/blissful-mccarthy-eg6jed
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -220,9 +220,9 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   only accepted when the car is on tarseal. Needs three BeamNG-side facts I don't have
   checked: ground material under the wheels (vehicle Lua), a flat draw shape or a runtime
   DecalRoad/decal, and the line's heading (veh:getDirectionVector, used 26 times in BeamMP's
-  own client, so that one is safe). Research brief handed to an Opus agent 27/10:
+  own client, so that one is safe). Research brief handed to a research agent 27/10:
   scratchpad/research/BRIEF_startline.md -> RESULT_startline.md. Build waits on the result.
-  Research came back 27/10 (Opus agent, 57 tool calls). Sources: stock game Lua dump on GitHub
+  Research came back 27/10 (research agent, 57 tool calls). Sources: stock game Lua dump on GitHub
   (wlkmanist/BeamNG_lua, newer than 0.36), rally-academy mod notes with per-row in-game checks
   on 0.39.4/0.40.0, BeamMP client source. Verified: wheels.wheels[i].contactMaterialID1/2 with
   4=RUBBER swapped out and particles.getMaterialByID for the name (HIGH); FFI
@@ -427,6 +427,50 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   so the config push on every admin command, and respawns, leave it alone).
   NEXT (one step): upload v0.21 (main.lua + zip, delete old zip), restart, /music set.mp3 0.4
   once; then leave and rejoin: it should play by itself when your car appears.
+
+- 30/10: three bugs from 5 days of v0.21 on the server -> v0.22, bench 128 (was 107).
+  1 START BUBBLE JAMMED: two cars in the bubble, the second never honked or was respawned,
+    the race could never start; the owner had to leave and rejoin. Root cause (main.lua): a
+    bubble entry only goes on a client {inside=false} or onPlayerDisconnect. A DELETED car
+    (Ctrl+R = new vehicle id, or removed) has no onUpdate pass left to send inside=false, so a
+    stale {ready=false} entry sat there and ready >= waiting was never true.
+    Fix: client sweeps its state once a second and drops any vid be:getObjectByID no longer
+    finds (BeamNG) or MPVehicleGE.getOwnMap no longer lists (BeamMP), sending inside=false if
+    it was in the bubble; onVehicleDestroyed(vid) does the same at once. Server re-counts on
+    every leave (and on a disconnect): everyone left has honked = countdown "<name>, last car
+    left". And a SECOND honk from a car already ready starts the countdown without the rest
+    ("<name> honked twice: starting without the rest"); everyone-honks stays the default.
+    UNCHECKED live: whether onVehicleDestroyed fires on Ctrl+R (if Ctrl+R keeps the same vid
+    the sweep never needs to fire, and the honk-twice rule is the way out either way).
+  2 MUSIC ONLY AFTER A RESET: autoplay started on Ctrl+R, not on the first car. Root cause
+    (BeamMP client MPVehicleGE.lua): a local car joins the own map in onServerVehicleSpawned,
+    after the server round trip, AFTER the GE onVehicleSpawned hook; musicAutoCheck returned
+    while the own map was empty, so the first spawn was missed.
+    Fix: no own-map gate, it plays the moment the config arrives (on join, before any car).
+    music.active is now true only if a play call worked; a refused autoplay is retried every
+    3 s, at most 10 times, counter reset by each config. Each try is a dbg line.
+    UNCHECKED live: whether the game plays audio before the first car exists (the retries
+    cover a refusal for 30 s; beamng.log "music autoplay retry" lines tell).
+  3 SPLIT SCREEN SHOWS NOTHING: the countdown and messages need the Race Countdown and chat
+    apps, which have no room in two narrow windows. Fix: kkLap's own imgui HUD, top centre,
+    no title/background/input, needs no UI app. Every toast()/flash() also feeds it; it draws
+    the newest big line (digits, GO, WRONG WAY, sector flash) and up to 4 small ones. The
+    server's race-start lines ("X ready (n of m)", "race start in N", "jumped the start",
+    "honked twice") also go out as kkLap_hud via sayHud(); other chat lines stay chat only.
+    cfg.hud (default true), admin /hud on|off. Drawn in a pcall; a failure turns it off and
+    logs "HUD failed to draw".
+    UNCHECKED live: im.SetWindowFontScale in BeamNG's binding (falls back to im.PushFont3
+    "cairo_semibold_large", font name UNCHECKED too, then plain text; beamng.log says "HUD big
+    text uses scale|font3|plain"); im.WindowFlags_AlwaysAutoResize (OR-ed in only if present);
+    im.Begin(name, nil, flags) with a nil open-pointer.
+  Bench found one more while writing it: a countdown digit expires a frame before the next one
+  lands, so an older big line (a lap flash) showed through between digits. A new big line now
+  replaces the old ones.
+  Trap: config.json on the server keeps its OLD rules list (missing keys are filled, existing
+  ones are not), so the new default rule line "Honk twice to start without the rest" only
+  shows after /rules add, or after removing "rules" from config.json.
+  NEXT (one step): upload v0.22 (main.lua + kkLap_v0.22.zip, delete kkLap_v0.21.zip),
+  restart, two cars in the bubble, one honks twice: countdown must start.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

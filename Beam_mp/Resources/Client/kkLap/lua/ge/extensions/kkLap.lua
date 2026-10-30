@@ -14,13 +14,14 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.21'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.22'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
 local counting = false       -- a shared countdown is running (server says so)
 local buildLine, removeLine  -- defined further down, used by onCfg above them
 local musicAutoCheck         -- defined in the music block, used by onVehicleSpawned above it
+local musicRetry = { t = 0, tries = 0 }   -- autoplay retries (v0.22): every 3 s, at most 10, reset by each config
 local tgt      = {}          -- the targets in order: checkpoints, then the separate finish line if there is one
 local lastDbg  = 0
 
@@ -29,9 +30,41 @@ local function dbg(msg)
     if cfg.debug then TriggerServerEvent('kkLap_dbg', msg) end
 end
 
+-- kkLap's own HUD (v0.22): everything toast() and flash() show ALSO goes on this queue, and
+-- drawHud() (further down) draws it with the game's imgui, no UI app needed. In split screen
+-- (two narrow windows) the Race Countdown app and the chat app have no room: this does.
+-- items: { text, ttl (seconds left), big (countdown / GO / WRONG WAY / sector flash) }
+local hud = { items = {}, bigMode = nil, broken = false }
+local function hudPush(text, ttl, big)
+    text = tostring(text); ttl = tonumber(ttl) or 3; big = big and true or false
+    for i = #hud.items, 1, -1 do
+        local it = hud.items[i]
+        if it.text == text then                     -- toast + flash of the same words = one item
+            table.remove(hud.items, i)
+            ttl = math.max(ttl, it.ttl); big = big or it.big
+        end
+    end
+    if big then                                     -- a new big line replaces the old one, like the flash app;
+        for i = #hud.items, 1, -1 do                -- else an older lap flash shows through between two digits (bench)
+            if hud.items[i].big then table.remove(hud.items, i) end
+        end
+    end
+    table.insert(hud.items, { text = text, ttl = ttl, big = big })
+    while #hud.items > 12 do table.remove(hud.items, 1) end
+end
+local function hudTick(dt)
+    for i = #hud.items, 1, -1 do
+        local it = hud.items[i]
+        it.ttl = it.ttl - dt
+        if it.ttl <= 0 then table.remove(hud.items, i) end
+    end
+end
+M.hudState = hud          -- for the bench
+
 local function toast(msg, ttl)
     -- BeamNG UI message, small, top left. Same call BeamMP's own MPVehicleGE.lua uses.
     guihooks.trigger('Message', { ttl = ttl or 5, msg = msg, icon = 'timer' })
+    hudPush(msg, ttl or 5, false)
 end
 
 -- Big centred flash, the one the game's own scenarios use for 3-2-1-GO and lap times.
@@ -40,6 +73,7 @@ end
 -- sound: a Lua string the UI runs, e.g. Engine.Audio.playOnce('AudioGui', 'event:UI_CountdownGo'); 0 = none.
 local function flash(msg, ttl, big, sound)
     guihooks.trigger('ScenarioFlashMessage', { { msg, ttl or 2, sound or 0, big ~= false } })
+    hudPush(msg, ttl or 2, big ~= false)
 end
 local function beep(name) return "Engine.Audio.playOnce('AudioGui', 'event:UI_" .. name .. "')" end
 
@@ -88,6 +122,7 @@ local function onCfg(data)
     if cfg.markers == nil then cfg.markers = true end   -- config.json from before v0.4.0
     lapClock.running = false; realtime('')              -- track changed or reset: clock off
     if cfg.lineStyle == nil then cfg.lineStyle = 'paint' end
+    musicRetry.t, musicRetry.tries = 0, 0   -- a new config = a fresh set of autoplay retries
     musicAutoCheck()      -- starts, keeps, or clears the autoplay track (music block below)
     tgt = {}
     for i, c in ipairs(cfg.checkpoints) do tgt[i] = c end
@@ -249,19 +284,32 @@ end
 local musicPlay   -- defined below; used by onMusic and by the autoplay
 
 -- autoplay (v0.21): the server's config carries musicAuto = the track every player should
--- hear. It starts when the player has a car (own vehicle spawned), not on a command; the
--- admin's /music sets or clears it. Only (re)starts when the track actually changed, since
--- the config is pushed on every admin command.
+-- hear; the admin's /music sets or clears it. Only (re)starts when the track actually
+-- changed, since the config is pushed on every admin command.
+-- v0.22: plays the moment the config arrives, car or no car. v0.21 waited for an own car,
+-- but BeamMP adds a local car to the own map only after the server round trip
+-- (MPVehicleGE.lua onServerVehicleSpawned), AFTER the GE onVehicleSpawned hook has fired, so
+-- the first car was always missed and only a Ctrl+R started it (live, 30/10).
+-- If the game refuses (audio not up yet), musicRetryTick tries again every 3 s, 10 times.
 musicAutoCheck = function()
     local want = cfg.musicAuto and musicPath(cfg.musicAuto) or nil
     if not want then
         if music.path and music.loop then musicStop(); dbg('music autoplay cleared') end
         return
     end
-    if music.path == want and music.active then return end                  -- already on it (even if the game refused: no retry storm)
-    if next(MPVehicleGE.getOwnMap()) == nil then return end                   -- no car yet: onVehicleSpawned will call again
+    if music.path == want and music.active then return end                  -- already playing it
     musicPlay(want, tonumber(cfg.musicVolume) or 0.5, true, nil)
-    dbg('music autoplay ' .. want)
+    dbg('music autoplay ' .. want .. (music.active and '' or ' (refused, will retry)'))
+end
+local function musicRetryTick(dt)
+    if not cfg.musicAuto or music.active or musicRetry.tries >= 10 then return end
+    musicRetry.t = musicRetry.t + dt
+    if musicRetry.t < 3 then return end
+    musicRetry.t = 0
+    musicRetry.tries = musicRetry.tries + 1
+    dbg(string.format('music autoplay retry %d of 10', musicRetry.tries))
+    musicAutoCheck()
+    if not music.active and musicRetry.tries >= 10 then dbg('music autoplay gave up after 10 retries, waiting for the next config') end
 end
 
 local function onMusic(data)
@@ -275,7 +323,7 @@ end
 musicPlay = function(path, vol, loop, seconds)
     musicStop()
     local d = { loop = loop, seconds = seconds }
-    music.path, music.vol, music.loop, music.every, music.t, music.active = path, vol, d.loop ~= false, tonumber(d.seconds), 0, true
+    music.path, music.vol, music.loop, music.every, music.t = path, vol, d.loop ~= false, tonumber(d.seconds), 0
     local ok, err = pcall(function()
         music.id  = Engine.Audio.createSource('AudioGui', path)
         music.src = music.id and scenetree.findObjectById(music.id)
@@ -288,6 +336,7 @@ musicPlay = function(path, vol, loop, seconds)
         music.id = nil
         ok, err = pcall(function() Engine.Audio.playOnce('AudioGui', path, { volume = vol }) end)
     end
+    music.active = ok and true or false            -- v0.22: true only if a play call worked, so autoplay retries
     dbg(string.format('music %s %s vol %.2f', ok and 'playing' or ('FAILED: ' .. tostring(err)), path, vol))
 end
 
@@ -399,6 +448,90 @@ local function drawRules()
 end
 M.rulesState = rules      -- for the bench
 
+-- ----------------------------------------------------- on-screen HUD (v0.22)
+-- One borderless, click-through window top centre, drawn with ui_imgui (the same binding
+-- as the rules window above, which is live). Flag names, bit.bor, GetIO().DisplaySize and
+-- SetNextWindowPos with a pivot are from the stock BeamNG gui.lua dump.
+-- Big text: SetWindowFontScale(3) if the binding has it (UNCHECKED), else PushFont3 if it
+-- exists (UNCHECKED, font name too), else plain text. Which one worked is logged once.
+local function onHud(data)                      -- server race-start lines: "X ready (1 of 2)", "race start in 5", jumps
+    local d = jsonDecode(data)
+    if d and d.msg then hudPush(d.msg, 5, false) end
+end
+local function hudFlags(im)
+    local f = bit.bor(im.WindowFlags_NoTitleBar, im.WindowFlags_NoResize, im.WindowFlags_NoMove,
+                      im.WindowFlags_NoBackground, im.WindowFlags_NoInputs, im.WindowFlags_NoFocusOnAppearing)
+    -- so the window grows to its text and stays centred; UNCHECKED name in BeamNG's binding, skipped if absent
+    local ok, g = pcall(function() return bit.bor(f, im.WindowFlags_AlwaysAutoResize) end)
+    return ok and g or f
+end
+local function hudColour(im, text)
+    if text == 'WRONG WAY' or text:find('WILL NOT COUNT') then return im.ImVec4(1.0, 0.25, 0.2, 1.0) end
+    if text == 'GO!' then return im.ImVec4(0.3, 1.0, 0.3, 1.0) end
+    return im.ImVec4(1.0, 0.9, 0.3, 1.0)
+end
+local function hudBig(im, text)
+    if hud.bigMode == nil then
+        if pcall(im.SetWindowFontScale, 1) then hud.bigMode = 'scale'
+        elseif type(im.PushFont3) == 'function' then hud.bigMode = 'font3'
+        else hud.bigMode = 'plain' end
+        dbg('HUD big text uses ' .. hud.bigMode)
+    end
+    if hud.bigMode == 'scale' then
+        im.SetWindowFontScale(3); im.TextColored(hudColour(im, text), text); im.SetWindowFontScale(1)
+    elseif hud.bigMode == 'font3' and pcall(im.PushFont3, 'cairo_semibold_large') then
+        im.TextColored(hudColour(im, text), text); im.PopFont()
+    else
+        im.TextColored(hudColour(im, text), text)
+    end
+end
+local function drawHud()
+    if cfg.hud == false or hud.broken or #hud.items == 0 then return end
+    local im = ui_imgui
+    if not im then return end
+    local big, small = nil, {}
+    for i = #hud.items, 1, -1 do                   -- newest first
+        local it = hud.items[i]
+        if it.big then big = big or it
+        elseif #small < 4 then table.insert(small, 1, it) end   -- up to 4, oldest on top
+    end
+    local ok, err = pcall(function()
+        local io = im.GetIO()
+        im.SetNextWindowPos(im.ImVec2(io.DisplaySize.x / 2, 40), im.Cond_Always, im.ImVec2(0.5, 0))
+        im.Begin('##kkLapHud', nil, hudFlags(im))
+        if big then hudBig(im, big.text) end
+        for _, it in ipairs(small) do im.Text(it.text) end
+        im.End()
+    end)
+    if not ok then hud.broken = true; dbg('HUD failed to draw, imgui call mismatch: ' .. tostring(err)) end
+end
+
+-- ----------------------------------------------------- deleted / respawned cars (v0.22)
+-- A car that is deleted (Ctrl+R = new game vehicle id, or removed) never runs the onUpdate
+-- edge that says "left the start bubble", so the server kept it as a car that has not
+-- honked and the countdown could never start (live, 30/10). Drop its state and, if it was
+-- in the bubble, tell the server it left.
+local function dropVeh(vid, why)
+    local s = state[vid]
+    if not s then return end
+    if s.inStart then TriggerServerEvent('kkLap_bubble', jsonEncode({ vid = vid, inside = false })) end
+    state[vid] = nil
+    dbg(string.format('vid %s dropped (%s)%s', tostring(vid), why, s.inStart and ', told the server it left the bubble' or ''))
+end
+local pruneT = 0
+local function pruneState(dt)                   -- once a second, not every frame
+    pruneT = pruneT + dt
+    if pruneT < 1 then return end
+    pruneT = 0
+    local own = MPVehicleGE.getOwnMap()            -- BeamMP
+    for vid in pairs(state) do                     -- clearing a field during pairs is allowed in Lua
+        if not be:getObjectByID(vid) then dropVeh(vid, 'vehicle gone')     -- BeamNG GE
+        elseif not own[vid] then dropVeh(vid, 'no longer ours') end
+    end
+end
+-- BeamNG GE hook when a vehicle is deleted; BeamMP's MPVehicleGE.lua hooks the same name.
+local function onVehicleDestroyed(vid) dropVeh(vid, 'destroyed') end
+
 -- ----------------------------------------------------- per-frame check
 local function onUpdate(dt)
     -- every 5 s, when debug is on, prove the loop is alive and show what it sees.
@@ -428,7 +561,11 @@ local function onUpdate(dt)
     end
 
     musicTick(dt)
+    musicRetryTick(dt)
     drawRules()
+    hudTick(dt)
+    drawHud()
+    pruneState(dt)
     if pending then
         pending.t = pending.t + dt
         if pending.t > 1 then dbg('no surface report from the car in 1 s'); sendPosReply(false, 'UNKNOWN') end
@@ -657,6 +794,7 @@ local function onExtensionLoaded()
     AddEventHandler('kkLap_go',     onGo)
     AddEventHandler('kkLap_music',  onMusic)
     AddEventHandler('kkLap_rules',  onRules)
+    AddEventHandler('kkLap_hud',    onHud)
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do loadVE(vid) end   -- cars that spawned before we loaded
     dbg('extension v' .. M.VERSION .. ' loaded, markers ' .. (draw.ok and 'available' or 'NOT available') .. ', asking server for config')
     TriggerServerEvent('kkLap_getcfg', '')   -- usually too early to arrive; onPlayerJoin on the server covers it (26/10)
@@ -666,6 +804,7 @@ M.onExtensionLoaded = onExtensionLoaded
 M.onUpdate          = onUpdate
 M.onPreRender       = onPreRender
 M.onVehicleSpawned  = onVehicleSpawned
+M.onVehicleDestroyed = onVehicleDestroyed
 M.onExtensionUnloaded = function() removeLine(); musicStop() end
 M.onClientEndMission  = function() removeLine(); musicStop() end   -- BeamNG: leaving the level: line gone anyway, music must stop (Darren, 27/10)
 M.myPid             = nil     -- our player id, stamped by the server on the config it sends us

@@ -75,6 +75,7 @@ Other plugins' slash commands are left alone.
     /lap set pointsMinDrivers 3   drivers needed before points show
     /lap announce on|off  every sector to everyone in chat (default off; laps always announce)
     /lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
+    /hud on|off        kkLap's own on-screen text, no UI app needed (default on, v0.22)
     /lap debug on|off  forward client debug lines to the server log
     /lap set minLapMs 5000
     /lap set markerAlpha 40   see-through-ness of the markers, 0 invisible, 255 solid (v0.5.2)
@@ -93,7 +94,10 @@ Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
 
 ## Music (v0.11, v0.14 loops, v0.21 autoplay)
 v0.21: an admin's /music <name> is remembered in config as the track for everyone. Each player
-hears it as soon as they have a car, joiners included, with no command. /music stop clears it.
+hears it with no command, joiners included. /music stop clears it.
+v0.22: it starts as soon as the player's game gets the config, on joining, before they have a
+car (v0.21 waited for a car and missed the first one, so it only began after a Ctrl+R). If the
+game refuses to play yet, it tries again every 3 s, up to 10 times.
 It plays through the "Other" slider in the game's Options > Audio (so do the countdown beeps).
 If it is quiet, check that slider before anything else (Darren, 27/10).
 The track does NOT go in the kkLap zip or in git. It lives in its own client zip on the
@@ -139,6 +143,14 @@ every frame with the same tools as the spheres. Neither changes grip or the AI m
 Research for this (sources, confidence per call) is in STATE.md and the bench covers the
 surface read in the car's own VM.
 
+## kkLap's own on-screen text, the HUD (v0.22)
+Works with no UI app at all, so it works in split screen where the countdown and chat apps
+have no room. Top centre of each game window: the countdown digits, GO, WRONG WAY and sector
+flashes in big letters, and under them up to 4 recent small lines: sector and lap times,
+"timing started", and the race-start lines from the server ("Darren ready (1 of 2 ...)",
+"race start in 5", "jumped the start", "honked twice"). Lines fade out by themselves. It
+does not take clicks or the mouse. Admin: /hud off turns it off for everyone, /hud on back.
+
 ## Big writing on screen (v0.7.0)
 Countdown, GO, every sector time and your own lap time flash BIG in the centre of the
 screen, with the game's own countdown beeps. A running lap clock sits mid-screen (a
@@ -154,6 +166,10 @@ after a disqualified lap, and the partial lap is dropped and timing starts fresh
 in there arms the countdown from any state too (v0.17).
 Everyone parks in the start bubble and EVERY car in there honks once (chat says "Darren ready, 1 of 3").
 When the last one honks, chat and screen count 5, 4, 3, 2, 1, GO. One car alone: its honk starts it.
+Someone parked in the bubble and not honking? Honk a SECOND time and the countdown starts
+without them ("Darren honked twice: starting without the rest"). They still get the GO start
+if they are in the bubble at GO. A car that drives out, is deleted or respawned, or whose
+player leaves, stops counting at once: if everyone left has honked, the countdown starts (v0.22).
 Someone arriving after GO is the next group: their own honk, their own countdown. Laps from the
 same GO carry the same race number in the chat line, so they compare together (v0.18).
 At GO every car still inside the bubble starts its lap from the same server instant, so the
@@ -186,7 +202,8 @@ the markers vanish and the timer still runs; kkLap.log says "markers NOT availab
 ## What is BeamMP and what is BeamNG in the client file
 BeamMP: TriggerServerEvent, AddEventHandler, MPVehicleGE.getOwnMap.
 BeamNG game Lua: be:getObjectByID, be:getPlayerVehicle, veh:getPosition, veh:getVelocityXYZ, veh:getID, guihooks.trigger,
-log, jsonEncode/jsonDecode, ffi.C.BNG_DBG_DRAW_Sphere, ffi.C.BNG_DBG_DRAW_TextAdvanced, color().
+log, jsonEncode/jsonDecode, ffi.C.BNG_DBG_DRAW_Sphere, ffi.C.BNG_DBG_DRAW_TextAdvanced, color(), ui_imgui (rules
+window and HUD), and the onVehicleSpawned / onVehicleDestroyed hooks (BeamMP's MPVehicleGE.lua uses the same names).
 Server file is 100% BeamMP server API (MP.*, Util.Json*).
 
 ## Licence

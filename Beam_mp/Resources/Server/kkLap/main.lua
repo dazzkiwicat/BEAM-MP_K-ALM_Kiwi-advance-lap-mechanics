@@ -12,7 +12,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.21"   -- same number as the client zip it was built with
+local VERSION  = "0.22"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -52,13 +52,15 @@ local defaultCfg = {
     rulesOnJoin  = true,     -- open the rules window when a player joins
     rules        = {         -- shown in the in-game rules window, /rules add <text> | /rules clear
         "Park in the start bubble and honk once. Everyone in there must honk, then 5-4-3-2-1-GO.",
+        "Someone parked and not honking? Honk twice to start without the rest.",
         "Arrive after GO? Your own honk starts your own countdown.",
         "Physics reset (Insert) is allowed and counted. Recover / teleport = that lap does not count.",
         "Back in the start bubble any time = fresh start, partial lap dropped.",
         "Two laps minimum before your best goes on the board. Points once 3 drivers have times.",
     },
-    musicAuto    = nil,      -- track every player hears as soon as they have a car; set by /music <name>, cleared by /music stop (v0.21)
+    musicAuto    = nil,      -- track every player hears from the moment they join (v0.22; v0.21 waited for a car); set by /music <name>, cleared by /music stop
     musicVolume  = 0.5,      -- /lap music <name> plays art/sound/kkLap/<name>.ogg from the zip on every client (v0.11)
+    hud          = true,     -- kkLap's own on-screen text (countdown, GO, ready lines), needs no UI app; /hud on|off (v0.22)
     announceLaps = true,     -- every lap goes to everyone in chat (v0.5.0)
     announceSplits = false,  -- every sector goes to everyone in chat too: noisy, off by default
     checkpoints  = {},
@@ -116,6 +118,13 @@ local function fmt(ms)
 end
 
 local function say(pid, msg) MP.SendChatMessage(pid, "[LAP] " .. msg) end
+-- race-start lines go to chat AND to every client's on-screen HUD (v0.22): in split screen
+-- the chat app and the countdown app have no room, so chat alone is not enough. Only the
+-- race-start lines use this; every other chat line stays chat only.
+local function sayHud(msg)
+    say(-1, msg)
+    MP.TriggerClientEventJson(-1, "kkLap_hud", { msg = msg })
+end
 
 -- ---------------------------------------------------------------- events from clients
 -- data = json {vid=number, cp=number, pos={x,y,z}}
@@ -175,7 +184,7 @@ local function startCountdown(who)
     if #cfg.checkpoints == 0 then return end
     race.active = true
     race.left   = math.max(1, math.floor(cfg.countdown))
-    say(-1, string.format("race start in %d  (%s)  - sit in the start bubble", race.left, who))
+    sayHud(string.format("race start in %d  (%s)  - sit in the start bubble", race.left, who))
     MP.TriggerClientEventJson(-1, "kkLap_count", { n = race.left })
     MP.CreateEventTimer("kkLap_tick", 1000)
     log("I", "countdown started by " .. who)
@@ -197,6 +206,18 @@ function onTick()
         log("I", "GO at " .. race.tGo)
     end
 end
+-- a car left the bubble (drove out, was deleted, its player left): if everyone still waiting
+-- has honked, that is the countdown (v0.22). Before this a car that vanished without saying
+-- so blocked the start for good, and the owner had to leave and rejoin (live, 30/10).
+local function bubbleLeft()
+    if not cfg.autoStart or race.active then return end
+    local waiting, ready = bubbleCounts()
+    if waiting > 0 and ready >= waiting then
+        local who
+        for _, e in pairs(bubble) do if e.ready and not e.started then who = e.name; break end end
+        startCountdown((who or "?") .. ", last car left")
+    end
+end
 function onBubble(pid, data)                   -- client: "my car entered / left the start bubble"
     local ok, d = pcall(Util.JsonDecode, data)
     if not ok or type(d) ~= "table" then return end
@@ -204,7 +225,9 @@ function onBubble(pid, data)                   -- client: "my car entered / left
     if d.inside then
         bubble[key] = bubble[key] or { pid = pid, vid = d.vid, name = MP.GetPlayerName(pid) or ("p" .. pid), ready = false, started = false }
     else
+        local had = bubble[key] ~= nil
         bubble[key] = nil
+        if had then bubbleLeft() end
     end
 end
 
@@ -216,17 +239,23 @@ function onArm(pid, data)                      -- client: "my car honked inside 
     local name = MP.GetPlayerName(pid) or ("p" .. pid)
     local e = bubble[key] or { pid = pid, vid = d.vid, name = name, ready = false, started = false }
     bubble[key] = e
+    local wasReady = e.ready == true             -- this is its second honk (v0.22)
     e.ready = true; e.started = false
     local waiting, ready = bubbleCounts()
     if ready >= waiting then
         startCountdown(name .. (waiting > 1 and string.format(", all %d ready", waiting) or ""))
+    elseif wasReady then
+        -- "everyone honks" stays the rule; a second honk is the way out when someone sits in
+        -- the bubble and never honks (Darren, 30/10). Cars inside at GO still get the GO start.
+        sayHud(name .. " honked twice: starting without the rest")
+        startCountdown(name)
     else
-        say(-1, string.format("%s ready  (%d of %d in the start bubble, honk when ready)", name, ready, waiting))
+        sayHud(string.format("%s ready  (%d of %d in the start bubble, honk when ready, twice to go without the rest)", name, ready, waiting))
     end
 end
 function onJump(pid, data)                     -- client: "my car left the bubble during the countdown"
     local name = MP.GetPlayerName(pid) or ("p" .. pid)
-    say(-1, name .. " jumped the start")
+    sayHud(name .. " jumped the start")
     log("I", name .. " jumped the start")
 end
 
@@ -437,16 +466,17 @@ local function isAdmin(pid)
     return false
 end
 local ADMIN_ONLY = { mark = true, start = true, finish = true, clear = true, undo = true, reset = true, debug = true,
-                     markers = true, announce = true, autostart = true, set = true, line = true, music = true, race = true, admin = true }
+                     markers = true, announce = true, autostart = true, set = true, line = true, music = true, race = true, admin = true,
+                     hud = true }
 local PLAYER_HELP = {
     "/rules   - this window     /times - the board     /help - commands",
     "/dj      - where the Discord DJ set is",
-    "Honk in the start bubble to start. Everything else is admin only.",
+    "Honk in the start bubble to start (twice: start without the rest). Everything else is admin only.",
 }
 local ADMIN_HELP = {
     "/mark [r] | /start [r] | /finish [r] | /finish same | /undo | /clear | /list",
     "/race [sec] | /reset | /autostart on|off | /announce on|off | /markers on|off",
-    "/line paint|draw | /music <file> [vol] [once] | /music stop | /dj <text>",
+    "/line paint|draw | /music <file> [vol] [once] | /music stop | /dj <text> | /hud on|off",
     "/rules add <text> | /rules clear | /admin add|remove <name> | /admin list",
     "/set minLapMs | defaultRadius | markerAlpha | lineWidth | countdown | minLaps | pointsMinDrivers",
 }
@@ -458,7 +488,7 @@ end
 -- the words that work on their own, "/mark" = "/lap mark"
 SHORT = { help = true, mark = true, start = true, finish = true, list = true, clear = true, undo = true,
           reset = true, debug = true, markers = true, announce = true, autostart = true, race = true,
-          times = true, line = true, music = true, set = true, lap = true, dj = true, rules = true, admin = true }
+          times = true, line = true, music = true, set = true, lap = true, dj = true, rules = true, admin = true, hud = true }
 
 function onChatMessage(pid, name, msg)
     -- v0.12: "/mark" works as well as "/lap mark". Any other "/word" is left alone for
@@ -572,6 +602,8 @@ function onChatMessage(pid, name, msg)
         cfg.announceSplits = (args[3] == "on"); saveCfg(); say(pid, "sector announcements to everyone: " .. tostring(cfg.announceSplits))
     elseif cmd == "markers" then
         cfg.markers = (args[3] == "on"); saveCfg(); sendCfg(-1); say(pid, "markers " .. tostring(cfg.markers))
+    elseif cmd == "hud" then
+        cfg.hud = (args[3] ~= "off"); saveCfg(); sendCfg(-1); say(pid, "on-screen HUD " .. tostring(cfg.hud))
     elseif cmd == "debug" then
         cfg.debug = (args[3] == "on"); saveCfg(); sendCfg(-1); say(pid, "debug " .. tostring(cfg.debug))
     elseif cmd == "set" and args[3] and tonumber(args[4]) then
@@ -598,6 +630,7 @@ function onPlayerDisconnect(pid)
     for k in pairs(runs) do
         if k:match("^" .. pid .. ":") then runs[k] = nil end
     end
+    bubbleLeft()                          -- the leaver may have been the one nobody could start without
 end
 
 function onInit()
