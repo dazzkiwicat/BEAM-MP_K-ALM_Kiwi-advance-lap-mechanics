@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.24'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.25'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 local state    = {}          -- [vid] = { nextCp, inside, started, flashCp, flashT, armed, jumpSent, lastPos, physResets, invalid }
@@ -29,6 +29,21 @@ local lastTrackRev = nil     -- the server's cfg.trackRev we last reset our lap 
 local function dbg(msg)
     log('I', 'kkLap', '[KKLAP] ' .. msg)   -- 'I' not 'D': BeamMP itself only logs E/W/I
     if cfg.debug then TriggerServerEvent('kkLap_dbg', msg) end
+end
+-- a failure: logged as an error and ALWAYS sent to the server, debug on or off; the server logs
+-- every line that starts "ERROR " (v0.25: so a broken HUD or onUpdate shows in kkLap.log)
+local function dbgErr(msg)
+    log('E', 'kkLap', '[KKLAP] ' .. msg)
+    pcall(TriggerServerEvent, 'kkLap_dbg', 'ERROR ' .. msg)
+end
+local function ownList()                 -- "[100, 101]": the own map, for the log (v0.25)
+    local ids = {}
+    local ok, own = pcall(MPVehicleGE.getOwnMap)
+    if not ok or type(own) ~= 'table' then return '[?]' end
+    for vid in pairs(own) do ids[#ids + 1] = tonumber(vid) or vid end
+    table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
+    for i, v in ipairs(ids) do ids[i] = tostring(v) end
+    return '[' .. table.concat(ids, ', ') .. ']'
 end
 
 -- kkLap's own HUD (v0.22): everything toast() and flash() show ALSO goes on this queue, and
@@ -164,6 +179,11 @@ local function onCfg(data)
     -- Any other push (/hud, /set, /music ...) keeps every lap running: before, it wiped the client's
     -- lap while the server kept its run, and the next line crossing was "wrong cp" (review, 30/10).
     local newTrack = (d.trackRev == nil) or (d.trackRev ~= lastTrackRev)   -- nil: a pre-0.24 server, always reset
+    local why                                      -- v0.25: the log says why the lap state went or stayed
+    if d.trackRev == nil then why = 'no track rev (pre-0.24 server): lap state reset'
+    elseif lastTrackRev == nil then why = 'first config: lap state reset'
+    elseif newTrack then why = string.format('track changed (rev %s -> %s): lap state reset', tostring(lastTrackRev), tostring(d.trackRev))
+    else why = string.format('same track (rev %s): lap state kept', tostring(d.trackRev)) end
     lastTrackRev = d.trackRev
     counting = false      -- the server re-sends kkLap_count each second of a countdown; a reload mid-countdown left this on for good
     if newTrack then
@@ -178,8 +198,11 @@ local function onCfg(data)
     if cfg.finish then tgt[#tgt + 1] = cfg.finish end     -- point-to-point: finish is the last target
     buildLine()
     if draw.ok then buildColours(cfg.markerAlpha) end   -- /lap set markerAlpha takes effect here
-    dbg(string.format('cfg received: %d checkpoints, debug=%s, markers=%s, track rev %s%s',
-        #cfg.checkpoints, tostring(cfg.debug), tostring(cfg.markers), tostring(d.trackRev), newTrack and ' (new: lap state reset)' or ''))
+    dbg(string.format('cfg received: %d checkpoints%s, debug=%s, markers=%s, hud=%s, track rev %s, %s',
+        #cfg.checkpoints, cfg.finish and ' + finish' or '', tostring(cfg.debug), tostring(cfg.markers), tostring(cfg.hud), tostring(d.trackRev), why))
+    dbg('own map at cfg time: ' .. ownList())
+    -- v0.25: tell the server which version got it (it warns a player on an old zip)
+    TriggerServerEvent('kkLap_ack', jsonEncode({ v = M.VERSION, rev = d.trackRev, cps = #cfg.checkpoints, reset = newTrack }))
 end
 
 local function sectorsText(list)
@@ -309,7 +332,11 @@ local function loadVE(vid)
     local veh = be:getObjectByID(vid)
     if veh then veh:queueLuaCommand("extensions.loadModulesInDirectory('lua/vehicle/extensions/kkLap')") end
 end
-local function onVehicleSpawned(vid) loadVE(vid); if MPVehicleGE.getOwnMap()[vid] then musicAutoCheck() end end
+local function onVehicleSpawned(vid)
+    local own = MPVehicleGE.getOwnMap()[vid] ~= nil
+    dbg(string.format('vehicle %s spawned (own: %s)', tostring(vid), own and 'yes' or 'no, or not yet: BeamMP lists it after the server round trip'))
+    loadVE(vid); if own then musicAutoCheck() end
+end
 
 local function onGo(data)
     counting = false
@@ -383,15 +410,23 @@ local musicPlay   -- defined below; used by onMusic and by the autoplay
 -- (MPVehicleGE.lua onServerVehicleSpawned), AFTER the GE onVehicleSpawned hook has fired, so
 -- the first car was always missed and only a Ctrl+R started it (live, 30/10).
 -- If the game refuses (audio not up yet), musicRetryTick tries again every 3 s, 10 times.
-musicAutoCheck = function()
+musicAutoCheck = function(retry)   -- retry: the retry line already said what it wants
     local want = cfg.musicAuto and musicPath(cfg.musicAuto) or nil
     if not want then
-        if music.path and music.loop then musicStop(); dbg('music autoplay cleared') end
+        if music.path and music.loop then musicStop(); dbg('music autoplay cleared (the server has no track: /music stop)') end
         return
     end
     -- already playing it, from the same /music command (musicNo: a new /music restarts it, v0.24, as the
     -- config is now the only message a looping /music sends)
-    if music.path == want and music.active and music.no == cfg.musicNo then return end
+    if music.path == want and music.active and music.no == cfg.musicNo then
+        if not music.keptSaid then music.keptSaid = true; dbg('music: ' .. want .. ' already playing (same /music), kept') end
+        return
+    end
+    music.keptSaid = nil
+    if not retry then
+        local own = ownList()
+        dbg('music: want ' .. want .. (own == '[]' and ', no car yet (plays anyway)' or ', own cars ' .. own))
+    end
     musicPlay(want, tonumber(cfg.musicVolume) or 0.5, true, tonumber(cfg.musicSeconds))
     music.no = cfg.musicNo
     dbg('music autoplay ' .. want .. (music.active and '' or ' (refused, will retry)'))
@@ -402,8 +437,8 @@ local function musicRetryTick(dt)
     if musicRetry.t < 3 then return end
     musicRetry.t = 0
     musicRetry.tries = musicRetry.tries + 1
-    dbg(string.format('music autoplay retry %d of 10', musicRetry.tries))
-    musicAutoCheck()
+    dbg(string.format('music autoplay retry %d of 10: want %s', musicRetry.tries, tostring(cfg.musicAuto)))
+    musicAutoCheck(true)
     if not music.active and musicRetry.tries >= 10 then dbg('music autoplay gave up after 10 retries, waiting for the next config') end
 end
 
@@ -426,7 +461,9 @@ musicPlay = function(path, vol, loop, seconds)
         music.src:setVolume(vol)                   -- UNCHECKED whether the source clamps at 1; playOnce path takes 2+ (RLS)
         music.src:play(-1)
     end)
+    local how = 'via createSource'
     if not ok then
+        how = 'via playOnce'
         dbg('music createSource failed (' .. tostring(err) .. '), trying playOnce')
         -- the source may exist even though the object lookup or setVolume failed: free it (v0.24, it leaked)
         if music.id then pcall(Engine.Audio.deleteSource, music.id) end
@@ -434,7 +471,7 @@ musicPlay = function(path, vol, loop, seconds)
         ok, err = pcall(function() Engine.Audio.playOnce('AudioGui', path, { volume = vol }) end)
     end
     music.active = ok and true or false            -- v0.22: true only if a play call worked, so autoplay retries
-    dbg(string.format('music %s %s vol %.2f', ok and 'playing' or ('FAILED: ' .. tostring(err)), path, vol))
+    dbg(string.format('music %s %s vol %.2f %s', ok and 'playing' or ('FAILED: ' .. tostring(err)), path, vol, ok and how or 'and playOnce failed too'))
 end
 
 -- server asked "where is your car" for /lap mark. Use the player's current vehicle.
@@ -545,7 +582,7 @@ local function drawRules()
     end)
     if not ok then
         if began then pcall(im.End) end
-        rules.open = false; dbg('rules window failed to draw, imgui call mismatch: ' .. tostring(err))
+        rules.open = false; dbgErr('rules window failed to draw, imgui call mismatch: ' .. tostring(err))
     end
 end
 M.rulesState = rules      -- for the bench
@@ -589,6 +626,15 @@ local function hudText(im, text, colour, scale)
     end
 end
 local function hudBig(im, text) hudText(im, text, hudColour(im, text), 3) end
+-- v0.25: the first time a kkLap window is drawn, the screen size it was drawn for (split screen
+-- = half width) and the big-text method, once per session
+local function hudFirstDraw(io, which)
+    if hud.sizeSaid then return end
+    hud.sizeSaid = true
+    local ds = io and io.DisplaySize
+    dbg(string.format('%s first draw: display %s x %s px, big text %s', which, tostring(ds and math.floor(ds.x) or '?'),
+        tostring(ds and math.floor(ds.y) or '?'), tostring(hud.bigMode or 'not chosen yet (no big line so far)')))
+end
 local function drawHud()
     hud.bottom = nil                               -- where the HUD window ends this frame; nil = not drawn
     if cfg.hud == false or hud.broken or #hud.items == 0 then return end
@@ -613,10 +659,11 @@ local function drawHud()
         if not (okH and type(h) == 'number') then h = (big and 56 or 0) + #small * 20 + 16 end
         hud.bottom = 40 + h
         im.End(); began = false
+        hudFirstDraw(io, 'HUD')
     end)
     if not ok then
         if began then pcall(im.End) end
-        hud.broken = true; dbg('HUD failed to draw, imgui call mismatch: ' .. tostring(err))
+        hud.broken = true; dbgErr('HUD failed to draw, imgui call mismatch: ' .. tostring(err))
     end
 end
 
@@ -672,11 +719,12 @@ local function drawTimer(c)
         end
         if c.best then imText(im, 'best ' .. M.fmt(c.best)) end
         im.End(); begun = false
+        hudFirstDraw(io, 'timer')
     end)
     if not ok then
         if begun then pcall(im.End) end
         hud.broken = true
-        dbg('HUD timer failed to draw, imgui call mismatch: ' .. tostring(err))
+        dbgErr('HUD timer failed to draw, imgui call mismatch: ' .. tostring(err))
     end
 end
 local function timerFrame(dt)
@@ -707,13 +755,17 @@ end
 -- edge that says "left the start bubble", so the server kept it as a car that has not
 -- honked and the countdown could never start (live, 30/10). Drop its state and, if it was
 -- in the bubble, tell the server it left.
-local function dropVeh(vid, why)
+local function dropVeh(vid, why, verb)
     clocks[vid] = nil                              -- its lap clock goes with it (v0.23)
     local s = state[vid]
-    if not s then return end
+    if not s then
+        if verb == 'destroyed' then dbg(string.format('vehicle %s destroyed (was in bubble: no, not one kkLap was timing)', tostring(vid))) end
+        return
+    end
     if s.inStart then TriggerServerEvent('kkLap_bubble', jsonEncode({ vid = vid, inside = false })) end
     state[vid] = nil
-    dbg(string.format('vid %s dropped (%s)%s', tostring(vid), why, s.inStart and ', told the server it left the bubble' or ''))
+    dbg(string.format('vehicle %s %s (%s, was in bubble: %s)', tostring(vid), verb or 'pruned', why,
+        s.inStart and 'yes, told the server it left' or 'no'))
 end
 local pruneT = 0
 local function pruneState(dt)                   -- once a second, not every frame
@@ -727,9 +779,11 @@ local function pruneState(dt)                   -- once a second, not every fram
     end
 end
 -- BeamNG GE hook when a vehicle is deleted; BeamMP's MPVehicleGE.lua hooks the same name.
-local function onVehicleDestroyed(vid) dropVeh(vid, 'destroyed') end
+local function onVehicleDestroyed(vid) dropVeh(vid, 'game hook', 'destroyed') end
 
 -- ----------------------------------------------------- per-frame check
+-- v0.25: the whole frame runs inside pcall (guarded, below). An error outside it stops the
+-- extension for good with nothing on screen but "mod stopped working".
 local function onUpdate(dt)
     -- every 5 s, when debug is on, prove the loop is alive and show what it sees.
     -- ABOVE the "no checkpoints" exit on purpose: v0.3.0 had it below, so on an empty
@@ -740,7 +794,7 @@ local function onUpdate(dt)
             lastDbg = 0
             local ids = {}
             for vid in pairs(MPVehicleGE.getOwnMap()) do table.insert(ids, tostring(vid)) end
-            dbg('alive, own vehicles: ' .. (#ids > 0 and table.concat(ids, ',') or 'none'))
+            dbg('alive, own vehicles: ' .. (#ids > 0 and table.concat(ids, ',') or 'none') .. ' (v' .. M.VERSION .. ')')   -- the server logs it once a minute, or when it changes
         end
     end
 
@@ -859,6 +913,31 @@ local function onUpdate(dt)
             if s.flashT > 0 then s.flashT = s.flashT - dt end
         end
     end
+end
+
+-- One error message = one log line the first time (sent to the server too), then a count every
+-- 10 s while it keeps happening ("onUpdate error x12: ..."). The frame after it runs as normal.
+local frameErr = { counts = {}, said = {}, msg = {}, t = 0, kinds = 0 }
+M.frameErrors = frameErr.counts              -- for the bench: ['onUpdate error: <msg>'] = count
+local function guarded(where, fn, dt)
+    frameErr.t = frameErr.t + (tonumber(dt) or 0)
+    if frameErr.t >= 10 then                 -- the counts, every 10 s, only for errors that happened again
+        frameErr.t = 0
+        for k, n in pairs(frameErr.counts) do
+            if frameErr.said[k] ~= n then frameErr.said[k] = n; dbg(string.format('%s error x%d: %s', frameErr.msg[k][1], n, frameErr.msg[k][2])) end
+        end
+    end
+    local ok, err = pcall(fn, dt)
+    if ok then return end
+    err = tostring(err)
+    local key = where .. ' error: ' .. err
+    if not frameErr.counts[key] then
+        if frameErr.kinds >= 20 then err = '(more than 20 different errors, the rest counted together)'; key = where .. ' error: ' .. err end
+        if not frameErr.counts[key] then frameErr.kinds = frameErr.kinds + 1; frameErr.msg[key] = { where, err } end
+    end
+    local n = (frameErr.counts[key] or 0) + 1
+    frameErr.counts[key] = n
+    if n == 1 then frameErr.said[key] = 1; dbgErr(string.format('%s error x1: %s', where, err)) end
 end
 
 -- How checkpoint i should look for a car in state s. Pure, so the bench can test it.
@@ -996,22 +1075,24 @@ local function onExtensionLoaded()
     AddEventHandler('kkLap_hud',    onHud)
     for vid, _ in pairs(MPVehicleGE.getOwnMap()) do loadVE(vid) end   -- cars that spawned before we loaded
     dbg('extension v' .. M.VERSION .. ' loaded, markers ' .. (draw.ok and 'available' or 'NOT available') .. ', asking server for config')
-    TriggerServerEvent('kkLap_getcfg', '')   -- usually too early to arrive; onPlayerJoin on the server covers it (26/10)
+    TriggerServerEvent('kkLap_getcfg', jsonEncode({ v = M.VERSION }))   -- usually too early to arrive; onPlayerJoin on the server covers it (26/10)
 end
 
 M.onExtensionLoaded = onExtensionLoaded
-M.onUpdate          = onUpdate
-M.onPreRender       = onPreRender
+M.onUpdate          = function(dt) guarded('onUpdate', onUpdate, dt) end        -- v0.25: never dies silently
+M.onPreRender       = function(dt) guarded('onPreRender', onPreRender, dt) end
 M.onVehicleSpawned  = onVehicleSpawned
 M.onVehicleDestroyed = onVehicleDestroyed
 -- leaving: the music must stop AND stay stopped. v0.22's autoplay retry restarted it 3 s later
 -- (review, v0.24): the retries are spent and the autoplay forgotten until the next config.
-local function silence()
+local function silence(why)
+    local was = music.path
     removeLine(); musicStop()
     musicRetry.tries = 10
     cfg.musicAuto = nil
+    if was then dbg('music: stopped (' .. why .. ')') end
 end
-M.onExtensionUnloaded = silence
-M.onClientEndMission  = silence   -- BeamNG: leaving the level: line gone anyway, music must stop (Darren, 27/10)
+M.onExtensionUnloaded = function() silence('extension unloaded') end
+M.onClientEndMission  = function() silence('level exit') end   -- BeamNG: leaving the level: line gone anyway, music must stop (Darren, 27/10)
 M.myPid             = nil     -- our player id, stamped by the server on the config it sends us
 return M

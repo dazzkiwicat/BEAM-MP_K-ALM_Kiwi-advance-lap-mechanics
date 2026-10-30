@@ -5,6 +5,8 @@
 --   * receives "I crossed checkpoint N" from clients and does the timing
 --   * broadcasts results and config changes to every client
 --   * answers /lap chat commands so options can be changed live, in game
+--   * answers "lap ..." typed in the server console (Pterodactyl's Console tab): since v0.25
+--     the admin commands run there only, unless cfg.adminChat is switched on
 --
 -- Every line this plugin prints starts with [KKLAP] so one grep finds it:
 --     grep KKLAP Server.log
@@ -12,7 +14,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.24"   -- same number as the client zip it was built with
+local VERSION  = "0.25"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -30,6 +32,16 @@ local function log(level, msg)
 end
 local function dbg(msg)            -- only when config.debug is on
     if cfg and cfg.debug then log("D", msg) end
+end
+-- the same line at most once per `ms` per key; the repeats are counted and reported with the
+-- next line that gets through (v0.25: say why, but do not flood the log)
+local quiet = {}
+local function logEvery(key, ms, level, msg, now)
+    local q = quiet[key]
+    if q and now - q.t < ms then q.n = q.n + 1; return end
+    local extra = (q and q.n > 0) and string.format("  (+%d like it not logged)", q.n) or ""
+    quiet[key] = { t = now, n = 0 }
+    log(level, msg .. extra)
 end
 
 -- ---------------------------------------------------------------- config
@@ -49,6 +61,8 @@ local defaultCfg = {
     pointsMinDrivers = 3,    -- points only show once this many drivers are on the board
     djText       = "DJ set is in the Discord voice channel: ask in Discord for the invite",   -- /dj prints this (v0.13)
     admins       = {},       -- player names allowed to change anything. Empty = everyone (first /admin add locks it) (v0.19)
+    adminChat    = false,    -- false: admin commands run from the server console only ("lap ..."), refused in chat (v0.25).
+                             -- true: admins (above) may also type them in chat. Set from the console: lap adminchat on|off
     rulesOnJoin  = true,     -- open the rules window when a player joins
     rules        = {         -- shown in the in-game rules window, /rules add <text> | /rules clear
         "Park in the start bubble and honk once. Everyone in there must honk, then 5-4-3-2-1-GO.",
@@ -105,7 +119,12 @@ end
 local lastBroadcastRev = nil
 local function sendCfg(pid)
     if pid == -1 then
-        if cfg.trackRev ~= lastBroadcastRev then bubble = {} end
+        if cfg.trackRev ~= lastBroadcastRev then
+            local n = 0
+            for _ in pairs(bubble) do n = n + 1 end
+            if n > 0 then log("I", string.format("bubble cleared (track rev %s -> %s, %d cars): the clients re-report who is in it", tostring(lastBroadcastRev), tostring(cfg.trackRev), n)) end
+            bubble = {}
+        end
         lastBroadcastRev = cfg.trackRev
     end
     -- a direct send carries the receiver's own player id, so the client knows which laps are its own
@@ -195,10 +214,36 @@ local function bubbleCounts()
     end
     return waiting, ready
 end
+-- v0.25 logging: every car is "name#vid" in the log, and the roster says who the decision looked at
+local function tag(e) return tostring(e.name) .. "#" .. tostring(e.vid) end
+local function bubbleList()                    -- entries in a fixed order, so two log lines compare
+    local keys = {}
+    for k in pairs(bubble) do keys[#keys + 1] = k end
+    table.sort(keys)
+    local out = {}
+    for i, k in ipairs(keys) do out[i] = bubble[k] end
+    return out
+end
+local function bubbleSize() return #bubbleList() end
+-- "[Darren#100 ready, Bob#7 waiting] (+1 already started)", and the names still to honk
+local function roster()
+    local parts, waitingOn, started = {}, {}, 0
+    for _, e in ipairs(bubbleList()) do
+        if e.started then started = started + 1
+        else
+            parts[#parts + 1] = tag(e) .. (e.ready and " ready" or " waiting")
+            if not e.ready then waitingOn[#waitingOn + 1] = tag(e) end
+        end
+    end
+    return "[" .. table.concat(parts, ", ") .. "]" .. (started > 0 and string.format(" (+%d already started)", started) or ""), waitingOn
+end
+-- true when a countdown started; false and the reason when it did not (v0.25: it used to return silently)
 local function startCountdown(who)
-    if race.active then return end
-    if race.tGo and nowMs() - race.tGo < 10000 then return end       -- just started one, ignore the parked cars
-    if #cfg.checkpoints == 0 then return end
+    if race.active then return false, string.format("a countdown is already running (%d left)", race.left) end
+    if race.tGo and nowMs() - race.tGo < 10000 then       -- just started one, ignore the parked cars
+        return false, string.format("GO was %.1f s ago, the start ignores honks for 10 s after a GO", (nowMs() - race.tGo) / 1000)
+    end
+    if #cfg.checkpoints == 0 then return false, "no start line yet (lap mark <player> in the console)" end
     -- clamped and an integer BEFORE race.active goes true: /set countdown 1e999 made the %d below
     -- throw with race.active stuck true, and no countdown could ever start again (review, v0.24)
     local left = math.floor(math.max(1, math.min(60, tonumber(cfg.countdown) or 5)))
@@ -208,6 +253,7 @@ local function startCountdown(who)
     MP.TriggerClientEventJson(-1, "kkLap_count", { n = race.left })
     MP.CreateEventTimer("kkLap_tick", 1000)
     log("I", "countdown started by " .. who)
+    return true
 end
 function onTick()
     if not race.active then MP.CancelEventTimer("kkLap_tick"); return end
@@ -220,12 +266,13 @@ function onTick()
         race.active = false
         race.tGo    = nowMs()                 -- the one instant every GO-starter's lap counts from
         race.no     = race.no + 1
-        for _, e in pairs(bubble) do                    -- this group has gone; late arrivals form the next
-            if not e.started then e.started = true; e.ready = false; e.goNo = race.no end   -- goNo: in the bubble at THIS GO (v0.24)
+        local gone = {}
+        for _, e in ipairs(bubbleList()) do             -- this group has gone; late arrivals form the next
+            if not e.started then e.started = true; e.ready = false; e.goNo = race.no; gone[#gone + 1] = tag(e) end   -- goNo: in the bubble at THIS GO (v0.24)
         end
         say(-1, "GO!")
         MP.TriggerClientEventJson(-1, "kkLap_go", { t = race.tGo })
-        log("I", "GO at " .. race.tGo)
+        log("I", string.format("GO at %d, race %d, in the bubble: %s", race.tGo, race.no, #gone > 0 and table.concat(gone, ", ") or "nobody"))
     end
 end
 -- a car left the bubble (drove out, was deleted, its player left): if everyone still waiting
@@ -236,49 +283,70 @@ local function bubbleLeft()
     local waiting, ready = bubbleCounts()
     if waiting > 0 and ready >= waiting then
         local who
-        for _, e in pairs(bubble) do if e.ready and not e.started then who = e.name; break end end
-        startCountdown((who or "?") .. ", last car left")
+        for _, e in ipairs(bubbleList()) do if e.ready and not e.started then who = e.name; break end end
+        local ok, why = startCountdown((who or "?") .. ", last car left")
+        log("I", string.format("bubble: %d of %d waiting cars ready after a car left %s -> %s", ready, waiting, (roster()), ok and "countdown" or ("no countdown: " .. why)))
     end
 end
 function onBubble(pid, data)                   -- client: "my car entered / left the start bubble"
     local ok, d = pcall(Util.JsonDecode, data)
-    if not ok or type(d) ~= "table" then return end
+    if not ok or type(d) ~= "table" then log("E", "bad bubble payload from " .. pid .. ": " .. tostring(data)); return end
     local key = pid .. ":" .. tostring(d.vid)
     if d.inside then
-        bubble[key] = bubble[key] or { pid = pid, vid = d.vid, name = MP.GetPlayerName(pid) or ("p" .. pid), ready = false, started = false }
+        if not bubble[key] then
+            bubble[key] = { pid = pid, vid = d.vid, name = MP.GetPlayerName(pid) or ("p" .. pid), ready = false, started = false }
+            log("I", string.format("bubble +%s (now %d)", tag(bubble[key]), bubbleSize()))
+        end
     else
-        local had = bubble[key] ~= nil
+        local e = bubble[key]
         bubble[key] = nil
-        if had then bubbleLeft() end
+        if e then
+            log("I", string.format("bubble -%s (now %d)", tag(e), bubbleSize()))
+            bubbleLeft()
+        end
     end
 end
 
 function onArm(pid, data)                      -- client: "my car honked inside the start bubble"
-    if not cfg.autoStart or race.active then return end
     local ok, d = pcall(Util.JsonDecode, data)
-    if not ok or type(d) ~= "table" then return end
+    if not ok or type(d) ~= "table" then log("E", "bad arm payload from " .. pid .. ": " .. tostring(data)); return end
     local key  = pid .. ":" .. tostring(d.vid)
     local name = MP.GetPlayerName(pid) or ("p" .. pid)
-    local e = bubble[key] or { pid = pid, vid = d.vid, name = name, ready = false, started = false }
-    bubble[key] = e
+    local who  = name .. "#" .. tostring(d.vid)
+    if not cfg.autoStart then log("I", "arm " .. who .. " ignored: autostart is off (lap autostart on)"); return end
+    if race.active then log("I", string.format("arm %s ignored: a countdown is already running (%d left)", who, race.left)); return end
+    local e = bubble[key]
+    if not e then
+        e = { pid = pid, vid = d.vid, name = name, ready = false, started = false }
+        bubble[key] = e
+        log("I", string.format("bubble +%s (now %d, from its honk: no bubble message came first)", who, bubbleSize()))
+    end
     local wasReady = e.ready == true             -- this is its second honk (v0.22)
     e.ready = true; e.started = false
     local waiting, ready = bubbleCounts()
+    local list, waitingOn = roster()
+    local line = string.format("arm %s: %d of %d ready %s", who, ready, waiting, list)
+    local started, why
     if ready >= waiting then
-        startCountdown(name .. (waiting > 1 and string.format(", all %d ready", waiting) or ""))
+        started, why = startCountdown(name .. (waiting > 1 and string.format(", all %d ready", waiting) or ""))
     elseif wasReady then
         -- "everyone honks" stays the rule; a second honk is the way out when someone sits in
         -- the bubble and never honks (Darren, 30/10). Cars inside at GO still get the GO start.
         sayHud(name .. " honked twice: starting without the rest")
-        startCountdown(name)
+        started, why = startCountdown(name)
+        line = line .. " (second honk: not waiting for " .. table.concat(waitingOn, ", ") .. ")"
     else
         sayHud(string.format("%s ready  (%d of %d in the start bubble, honk when ready, twice to go without the rest)", name, ready, waiting))
+        why = "waiting on " .. table.concat(waitingOn, ", ")
     end
+    log("I", line .. (started and " -> countdown" or ""))
+    if not started then log("I", "no countdown: " .. why) end
 end
 function onJump(pid, data)                     -- client: "my car left the bubble during the countdown"
     local name = MP.GetPlayerName(pid) or ("p" .. pid)
+    local ok, d = pcall(Util.JsonDecode, data)
     sayHud(name .. " jumped the start")
-    log("I", name .. " jumped the start")
+    log("I", string.format("%s#%s jumped the start (%d s left)", name, tostring(ok and type(d) == "table" and d.vid or "?"), race.left or 0))
 end
 
 -- points: 100 for the top time, less the further off it you are. floor(100 * top / yours).
@@ -294,11 +362,14 @@ function onInvalid(pid, data)
     if not ok or type(d) ~= "table" then return end
     local key = pid .. ":" .. tostring(d.vid)
     local r = runs[key]
-    if not r or not r.lapStart then return end
-    r.invalid = true
     local name = MP.GetPlayerName(pid) or ("p" .. pid)
+    if not r or not r.lapStart then
+        log("I", string.format("invalid from %s#%s ignored: no lap running on the server (%s): %s", name, tostring(d.vid), r and "run, no lap start" or "no run", tostring(d.reason)))
+        return
+    end
+    r.invalid = true; r.invalidWhy = tostring(d.reason)
     say(-1, name .. "  lap will not count: " .. tostring(d.reason))
-    log("I", name .. " lap invalidated: " .. tostring(d.reason))
+    log("I", string.format("%s#%s lap invalidated: %s (lap %.1f s in, heading for cp %d)", name, tostring(d.vid), tostring(d.reason), (nowMs() - r.lapStart) / 1000, r.nextCp))
 end
 
 function onCross(pid, data)
@@ -316,6 +387,7 @@ function onCross(pid, data)
     r.resets = (r.resets or 0) + (tonumber(d.resets) or 0)      -- physics resets since the last checkpoint, from the client
     runs[key] = r
     local t   = nowMs()
+    local who = (MP.GetPlayerName(pid) or ("p" .. pid)) .. "#" .. tostring(d.vid)
     local n   = #cfg.checkpoints + (cfg.finish and 1 or 0)   -- targets: checkpoints, then the finish line if separate
 
     dbg(string.format("cross pid=%d vid=%s cp=%s expecting=%d", pid, tostring(d.vid), tostring(d.cp), r.nextCp))
@@ -325,7 +397,7 @@ function onCross(pid, data)
         -- Always works, for everyone, whatever happened before (Darren's rule, 27/10).
         dbg(string.format("restart pid=%d vid=%s, partial lap dropped", pid, tostring(d.vid)))
         MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
-        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.raceNo = nil
+        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.raceNo = nil; r.invalidWhy = nil
         r.nextCp   = (n > 1) and 2 or 1
         return
     end
@@ -337,14 +409,21 @@ function onCross(pid, data)
         -- flying through the bubble at that moment got the GO instant as its start: a free head start.
         local e = bubble[key]
         if race.tGo and t - race.tGo < 5000 and e and e.started and e.goNo == race.no then
-            r.lapStart = race.tGo; r.lastCp = race.tGo; r.sectors = {}; r.resets = 0; r.invalid = false
+            r.lapStart = race.tGo; r.lastCp = race.tGo; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
             r.raceNo = race.no                 -- laps from the same GO are compared together
             r.nextCp   = (n > 1) and 2 or 1
             MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "GO start" })
         else
             -- not on the line at GO: an ordinary line start from now (the client is already heading for cp2)
-            dbg(string.format("GO cross refused pid=%d vid=%s: not in the bubble at GO, line start instead", pid, tostring(d.vid)))
-            r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.raceNo = nil
+            -- v0.25: which of the four conditions failed, with the numbers
+            local why
+            if not race.tGo then why = "the server has had no GO yet"
+            elseif t - race.tGo >= 5000 then why = string.format("GO was %d ms ago (limit 5000)", t - race.tGo)
+            elseif not e then why = "not in the server's bubble roster " .. (roster())
+            elseif not e.started then why = "in the bubble but not there at GO (arrived after it)"
+            else why = string.format("in the bubble at GO %s, this GO is %d", tostring(e.goNo), race.no) end
+            log("I", string.format("GO cross refused %s: %s; line start from now instead", who, why))
+            r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.raceNo = nil; r.invalidWhy = nil
             r.nextCp   = (n > 1) and 2 or 1
             MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
         end
@@ -353,6 +432,8 @@ function onCross(pid, data)
 
     if d.cp ~= r.nextCp then
         -- wrong checkpoint: ignore, but tell the client in debug so a bad radius shows up
+        logEvery("wrongcp " .. key, 5000, "I", string.format("cross refused %s: got cp %s, wanted cp %d (of %d)%s", who, tostring(d.cp), r.nextCp, n,
+                 r.lapStart and string.format(", lap %.1f s in", (t - r.lapStart) / 1000) or ", no lap running"), t)
         MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "wrong cp " .. tostring(d.cp) .. ", want " .. r.nextCp })
         return
     end
@@ -361,7 +442,7 @@ function onCross(pid, data)
         -- point-to-point: the start only starts. Crossing it mid-run restarts the run.
         if r.lapStart then dbg("run restarted at the start line") end
         MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
-        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false
+        r.lapStart = t; r.lastCp = t; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
         r.nextCp   = (n > 1) and 2 or 1
         return
     end
@@ -379,11 +460,12 @@ function onCross(pid, data)
             end
             local lapDelta = r.best and (lap - r.best) or nil   -- vs your best before this lap (v0.20)
             if lap < cfg.minLapMs then
-                dbg("lap rejected, too short: " .. lap)
+                log("I", string.format("lap rejected, too short: %s %d ms < minLapMs %d (%d sectors)", who, lap, cfg.minLapMs, #r.sectors))
             elseif r.invalid then
                 local name = MP.GetPlayerName(pid) or ("p" .. pid)
-                log("I", "LAP NOT COUNTED " .. name .. " " .. fmt(lap) .. " (invalidated)")
-                lapRecord(name .. "  NOT COUNTED  " .. fmt(lap) .. "  (position reset)")
+                local why  = r.invalidWhy or "position reset"
+                log("I", string.format("LAP NOT COUNTED %s %s (invalidated: %s)", who, fmt(lap), why))
+                lapRecord(name .. "  NOT COUNTED  " .. fmt(lap) .. "  (" .. why .. ")")
                 say(-1, name .. "  " .. fmt(lap) .. "  not counted")
             else
                 r.laps = r.laps + 1
@@ -419,14 +501,15 @@ function onCross(pid, data)
                         e.laps = (e.laps or 0) + add; e.name = name; e.bestSectors = bs
                     end
                     saveBoard()
-                elseif r.laps == 1 then
-                    say(pid, string.format("one more lap and your best counts for the board (minimum %d)", cfg.minLaps))
+                else
+                    log("I", string.format("board: %s has %d of %d laps this run, not on the board yet", who, r.laps, cfg.minLaps))
+                    if r.laps == 1 then say(pid, string.format("one more lap and your best counts for the board (minimum %d)", cfg.minLaps)) end
                 end
             end
         else
             MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "timing started" })
         end
-        r.resets = 0; r.invalid = false
+        r.resets = 0; r.invalid = false; r.invalidWhy = nil
         if cfg.finish then
             r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.nextCp = 1   -- course done: back to the start to go again
         else
@@ -454,21 +537,70 @@ function onCross(pid, data)
     end
 end
 
--- client debug lines land in the server log with the same tag
-function onClientDbg(pid, data)
-    if cfg.debug then log("C" .. pid, data) end
+-- ------------------------------------------------- which client mod version each player runs (v0.25)
+-- The client says it on loading ("extension v0.25 loaded", a v0.24 client too), in its alive
+-- line, on kkLap_getcfg and on kkLap_ack (sent for every config it receives). A player on an old
+-- zip (the game kept a cached copy) is told once and the log says so once.
+local clientVer, verWarned = {}, {}
+local function noteClientVersion(pid, v)
+    if v == nil or v == "" then return end
+    v = tostring(v)
+    clientVer[pid] = v
+    if v ~= VERSION and not verWarned[pid] then
+        verWarned[pid] = true
+        local name = MP.GetPlayerName(pid) or ("p" .. pid)
+        log("W", string.format("client %s runs v%s, server is v%s", name, v, VERSION))
+        say(pid, string.format("kkLap: your client mod is v%s, server is v%s, rejoin to re-download", v, VERSION))
+    end
 end
 
--- client extension just loaded and wants the current config
+-- client debug lines land in the server log with the same tag.
+-- v0.25: the "alive" line (every 5 s per client, 80% of the log) is logged once a minute per
+-- client, or at once when what it says changes. Lines starting "ERROR " are always logged.
+local alive = {}          -- pid -> { t, what, n = lines not logged since }
+function onClientDbg(pid, data)
+    data = tostring(data)
+    noteClientVersion(pid, data:match("^extension v(%S+) loaded") or data:match("^alive.*%(v([^%)]+)%)%s*$"))
+    local isErr = data:sub(1, 6) == "ERROR "
+    if not (cfg.debug or isErr) then return end
+    if data:sub(1, 5) == "alive" then
+        local what, t = data:gsub("%s*%(v[^%)]*%)%s*$", ""), nowMs()
+        local a = alive[pid]
+        if a and a.what == what and t - a.t < 60000 then a.n = a.n + 1; return end
+        if a and a.n > 0 then data = data .. string.format("  (%d alive lines since the last one, same)", a.n) end
+        alive[pid] = { t = t, what = what, n = 0 }
+    end
+    log("C" .. pid, data)
+end
+
+-- client extension just loaded and wants the current config (v0.25: the payload carries its version)
 function onGetCfg(pid, data)
+    local ok, d = pcall(Util.JsonDecode, data)
+    if ok and type(d) == "table" then noteClientVersion(pid, d.v) end
     sendCfg(pid)
+end
+-- client got a config: { v = its version, rev = trackRev, cps = checkpoints, reset = its lap state was reset }
+function onAck(pid, data)
+    local ok, d = pcall(Util.JsonDecode, data)
+    if not ok or type(d) ~= "table" then log("E", "bad ack from " .. pid .. ": " .. tostring(data)); return end
+    noteClientVersion(pid, d.v)
 end
 
 -- client answers "where is vehicle X" for /lap mark
 -- the client answers /lap mark, /lap start and /lap finish here, echoing "what" it was asked for
+-- v0.25: every answer goes to that player AND to kkLap.log (so to the console too, where
+-- "lap mark <player>" was typed: the console's own reply is gone by the time the car answers)
+local posAsked = {}       -- pid -> what the console asked that player's car for
 function onPosReply(pid, data)
     local ok, d = pcall(Util.JsonDecode, data)
     if not ok or type(d) ~= "table" or not d.pos then log("E", "bad pos reply: " .. tostring(data)); return end
+    local pname = MP.GetPlayerName(pid) or ("p" .. pid)
+    local by = posAsked[pid] and " (asked from the console)" or ""
+    posAsked[pid] = nil
+    local function say(p, msg)                                -- shadows the chat say: chat + log
+        MP.SendChatMessage(p, "[LAP] " .. msg)
+        log("I", "position from " .. pname .. by .. ": " .. msg)
+    end
     local what = d.what or "mark"
     if what == "mark" and #cfg.checkpoints == 0 then what = "start" end   -- first mark IS the start
     local cp = { x = d.pos.x, y = d.pos.y, z = d.pos.z, r = d.r or cfg.defaultRadius }
@@ -479,7 +611,6 @@ function onPosReply(pid, data)
         -- lines: only on tarseal (Darren's rule, 27/10), and they need the car's heading to run across the road
         if not d.sealed then
             say(pid, what .. " must be on tarseal. Wheels are on: " .. tostring(d.surface))
-            log("I", what .. " mark refused, surface " .. tostring(d.surface))
             return
         end
         if type(d.heading) == "table" then cp.hx, cp.hy = tonumber(d.heading.x) or 0, tonumber(d.heading.y) or 1 end
@@ -502,9 +633,14 @@ function onPosReply(pid, data)
     end
 end
 
--- ---------------------------------------------------------------- chat commands
--- Return 1 swallows the message so it doesn't show in chat.
+-- ---------------------------------------------------------------- commands: chat and server console
+-- v0.25 (Darren, 30/10: "i need ONLY admin commands for server side only terminal"): one command
+-- body, runCommand, for both. Chat: /lap mark or /mark, answered in chat; admin commands are refused
+-- there unless cfg.adminChat is on. Console (Pterodactyl's Console tab, the BeamMP server console):
+-- "lap mark Darren", answered as onConsoleInput's return value, which the console prints.
+local CONSOLE = -2        -- the console's "player id": a sentinel, never a real player
 local function isAdmin(pid)
+    if pid == CONSOLE then return true end          -- whoever has the server console owns the server
     if #cfg.admins == 0 then return true end        -- nobody set yet: open (bootstrap)
     local name = MP.GetPlayerName(pid) or ""
     for _, a in ipairs(cfg.admins) do if a == name then return true end end
@@ -512,18 +648,36 @@ local function isAdmin(pid)
 end
 local ADMIN_ONLY = { mark = true, start = true, finish = true, clear = true, undo = true, reset = true, debug = true,
                      markers = true, announce = true, autostart = true, set = true, line = true, music = true, race = true, admin = true,
-                     hud = true }
+                     hud = true, status = true, report = true, adminchat = true }
+-- an admin command: the ADMIN_ONLY words, and the admin halves of two player commands
+local function isAdminCmd(cmd, args)
+    if ADMIN_ONLY[cmd] then return true end
+    if cmd == "rules" and (args[3] == "add" or args[3] == "clear") then return true end
+    if cmd == "dj" and args[3] then return true end
+    return false
+end
 local PLAYER_HELP = {
     "/rules   - this window     /times - the board     /help - commands",
     "/dj      - where the Discord DJ set is",
     "Honk in the start bubble to start (twice: start without the rest). Everything else is admin only.",
 }
-local ADMIN_HELP = {
+local ADMIN_HELP = {      -- chat spelling, shown only while adminChat is on
     "/mark [r] | /start [r] | /finish [r] | /finish same | /undo | /clear | /list",
     "/race [sec] | /race stop | /reset | /autostart on|off | /announce on|off | /markers on|off",
     "/line paint|draw | /music <file> [vol] [once] | /music stop | /dj <text> | /hud on|off",
-    "/rules add <text> | /rules clear | /admin add|remove <name> | /admin list",
+    "/rules add <text> | /rules clear | /admin add|remove <name> | /admin list | /status | /report",
     "/set minLapMs | defaultRadius | markerAlpha | lineWidth | countdown | minLaps | pointsMinDrivers | musicVolume",
+}
+local CONSOLE_HELP = {    -- console spelling: "lap" first ("/lap" and "kklap" work too)
+    "kkLap v" .. VERSION .. " admin commands, typed here in the server console:",
+    "  lap mark <player> [r] | lap start <player> [r] | lap finish <player> [r]   at that player's car",
+    "  lap finish same | lap undo | lap clear | lap list | lap reset",
+    "  lap race [sec] | lap race stop | lap autostart on|off | lap announce on|off | lap markers on|off",
+    "  lap line paint|draw | lap music <file> [vol] [once] | lap music stop | lap dj [text] | lap hud on|off | lap debug on|off",
+    "  lap rules | lap rules add <text> | lap rules clear | lap admin add|remove <name> | lap admin list",
+    "  lap set minLapMs|defaultRadius|markerAlpha|lineWidth|countdown|minLaps|pointsMinDrivers|musicVolume <n>",
+    "  lap times | lap status (what the plugin sees now) | lap report (writes report.txt to upload)",
+    "  lap adminchat on|off   admins may type these in game chat too (off = console only)",
 }
 -- /set <key> <n>: only these keys, only in range (v0.24). /set countdown 1e999 used to be accepted and
 -- jammed the race start for good. integer = rounded down. Anything else in config.json: edit the file.
@@ -538,88 +692,177 @@ local SET_KEYS = {
     musicVolume      = { 0, 10 },
 }
 -- on|off commands: no argument SHOWS the value (v0.24; before, a bare /markers switched them off)
-local function onOff(pid, args, key, label, push)
-    if args[3] == "on" or args[3] == "off" then
-        cfg[key] = (args[3] == "on"); saveCfg(); if push then sendCfg(-1) end
-        say(pid, label .. " " .. tostring(cfg[key]))
+local function onOff(reply, pfx, args, key, label, push)
+    local a = args[3] and args[3]:lower()
+    if a == "on" or a == "off" then
+        cfg[key] = (a == "on"); saveCfg(); if push then sendCfg(-1) end
+        reply(label .. " " .. tostring(cfg[key]))
     else
-        say(pid, label .. " is " .. (cfg[key] and "on" or "off") .. "  (/" .. args[2] .. " on|off to change)")
+        reply(label .. " is " .. (cfg[key] and "on" or "off") .. "  (" .. pfx .. args[2] .. " on|off to change)")
     end
 end
 local function sendRules(pid, open)
     MP.TriggerClientEventJson(pid, "kkLap_rules", { open = open, rules = cfg.rules, player = PLAYER_HELP,
-                                                    admin = isAdmin(pid) and ADMIN_HELP or nil })
+                                                    admin = (cfg.adminChat and isAdmin(pid)) and ADMIN_HELP or nil })
+end
+
+-- a player by name, for the console's "lap mark <player>": exact (any case), else the only one
+-- whose name starts with it. MP.GetPlayers(): BeamMP server API, { [id] = name } (TLuaEngine.cpp).
+local function findPlayer(who)
+    local ok, list = pcall(MP.GetPlayers)
+    if not ok or type(list) ~= "table" then return nil, "MP.GetPlayers failed: " .. tostring(list) end
+    local low, hit, names = who:lower(), {}, {}
+    for id, name in pairs(list) do
+        names[#names + 1] = tostring(name)
+        if tostring(name):lower() == low then return tonumber(id), tostring(name) end
+        if tostring(name):lower():sub(1, #low) == low then hit[#hit + 1] = { tonumber(id), tostring(name) } end
+    end
+    if #hit == 1 then return hit[1][1], hit[1][2] end
+    table.sort(names)
+    return nil, (#hit > 1 and "more than one player starts with " .. who or "no player called " .. who) ..
+                " (on now: " .. (#names > 0 and table.concat(names, ", ") or "nobody") .. ")"
+end
+
+-- ------------------------------------------------- lap status / lap report (v0.25)
+local REPORT_PATH = "Resources/Server/kkLap/report.txt"
+local function ago(t) return t and string.format("%.1f s ago", (nowMs() - t) / 1000) or "never" end
+local function statusLines()
+    local L = {}
+    local okc, count = pcall(MP.GetPlayerCount)
+    local vers = {}
+    for pid, v in pairs(clientVer) do vers[#vers + 1] = (MP.GetPlayerName(pid) or ("p" .. pid)) .. " v" .. v end
+    table.sort(vers)
+    L[#L + 1] = string.format("kkLap v%s, players %s, client mods: %s", VERSION, okc and tostring(count) or "?", #vers > 0 and table.concat(vers, ", ") or "none reported")
+    L[#L + 1] = string.format("track: rev %s, %d checkpoints, %s", tostring(cfg.trackRev), #cfg.checkpoints, cfg.finish and "separate finish (point-to-point)" or "loop")
+    L[#L + 1] = string.format("race: active %s, %s, GO %s, race no %d", tostring(race.active), race.active and (race.left .. " s left") or "no countdown",
+                              ago(race.tGo), race.no)
+    local b = bubbleList()
+    local parts = {}
+    for _, e in ipairs(b) do
+        parts[#parts + 1] = tag(e) .. (e.started and (" started (GO " .. tostring(e.goNo) .. ")") or (e.ready and " ready" or " waiting"))
+    end
+    L[#L + 1] = string.format("bubble: %d  %s", #b, #parts > 0 and ("[" .. table.concat(parts, ", ") .. "]") or "(empty)")
+    local keys = {}
+    for k in pairs(runs) do keys[#keys + 1] = k end
+    table.sort(keys)
+    if #keys == 0 then L[#L + 1] = "runs: none" end
+    for _, k in ipairs(keys) do
+        local r = runs[k]
+        local pid, vid = k:match("^(-?%d+):(.*)$")
+        L[#L + 1] = string.format("run %s#%s: next cp %d (last cp %s), lap start %s, laps %d, best %s, invalid %s%s%s",
+            MP.GetPlayerName(tonumber(pid)) or ("p" .. tostring(pid)), tostring(vid), r.nextCp, r.lapStart and tostring(r.nextCp == 1 and "the last one" or r.nextCp - 1) or "-",
+            ago(r.lapStart), r.laps or 0, r.best and fmt(r.best) or "-", tostring(r.invalid == true),
+            r.invalidWhy and (" (" .. r.invalidWhy .. ")") or "", r.raceNo and (", race " .. r.raceNo) or "")
+    end
+    L[#L + 1] = string.format("cfg: countdown %s, minLaps %s, minLapMs %s, autoStart %s, musicAuto %s, hud %s, adminChat %s, debug %s, trackRev %s, admins %s",
+        tostring(cfg.countdown), tostring(cfg.minLaps), tostring(cfg.minLapMs), tostring(cfg.autoStart), tostring(cfg.musicAuto), tostring(cfg.hud),
+        tostring(cfg.adminChat == true), tostring(cfg.debug), tostring(cfg.trackRev), #cfg.admins > 0 and table.concat(cfg.admins, ", ") or "none (everyone)")
+    return L
+end
+local function logTail(n)               -- the last n lines of kkLap.log, read from its end
+    local f = io.open(LOG_PATH, "r")
+    if not f then return {} end
+    local size = f:seek("end")
+    f:seek("set", math.max(0, size - 400000))
+    local txt = f:read("*a") or ""; f:close()
+    local lines = {}
+    for l in txt:gmatch("[^\n]+") do lines[#lines + 1] = l end
+    if size > 400000 then table.remove(lines, 1) end        -- the first one is cut in half
+    local out = {}
+    for i = math.max(1, #lines - n + 1), #lines do out[#out + 1] = lines[i] end
+    return out
+end
+local function writeReport()
+    local f, err = io.open(REPORT_PATH, "w")
+    if not f then return nil, err end
+    local function json(t)
+        local enc = Util.JsonEncode(t)
+        local ok, pretty = pcall(Util.JsonPrettify, enc)    -- BeamMP server API (LuaAPI.cpp); plain JSON if missing
+        return (ok and type(pretty) == "string") and pretty or enc
+    end
+    local tail = logTail(300)
+    f:write("kkLap report ", os.date("%Y-%m-%d %H:%M:%S"), "  (lap report in the server console)\n\n")
+    f:write("== status\n", table.concat(statusLines(), "\n"), "\n\n")
+    f:write("== config (as running)\n", json(cfg), "\n\n")
+    f:write("== board (times.json)\n")
+    for i, it in ipairs(sortedBoard()) do
+        f:write(string.format("%d. %s  %s  %s  laps %d  @%d km/h  resets %d\n", i, it.name, fmt(it.e.bestMs), sectorsText(it.e.sectors or {}),
+                              it.e.laps or 0, it.e.kph or 0, it.e.resets or 0))
+    end
+    f:write(json(board), "\n\n")
+    f:write("== last ", #tail, " lines of kkLap.log\n", table.concat(tail, "\n"), "\n")
+    f:close()
+    return REPORT_PATH, #tail
 end
 
 -- the words that work on their own, "/mark" = "/lap mark"
 SHORT = { help = true, mark = true, start = true, finish = true, list = true, clear = true, undo = true,
           reset = true, debug = true, markers = true, announce = true, autostart = true, race = true,
-          times = true, line = true, music = true, set = true, lap = true, dj = true, rules = true, admin = true, hud = true }
+          times = true, line = true, music = true, set = true, lap = true, dj = true, rules = true, admin = true, hud = true,
+          status = true, report = true, adminchat = true }
 
-function onChatMessage(pid, name, msg)
-    -- v0.12: "/mark" works as well as "/lap mark". Any other "/word" is left alone for
-    -- other plugins. Unknown words after "/lap" still get the help text.
-    if msg:sub(1, 1) ~= "/" then return end
-    local args = {}
-    for w in msg:gmatch("%S+") do table.insert(args, w) end
-    if args[1] ~= "/lap" then
-        local short = args[1]:sub(2):lower()
-        if not SHORT[short] then return end           -- not ours
-        table.insert(args, 1, "/lap")                 -- "/mark 10" -> "/lap mark 10"
-        args[2] = short
-    end
+-- One command, from chat (pid = the player) or the console (pid = CONSOLE). reply(msg) answers
+-- whoever typed it; name is who did it, for the broadcast lines. Admin gating is the caller's job.
+local function runCommand(pid, args, reply, name)
     local cmd = args[2] or "help"
-    if ADMIN_ONLY[cmd] and not isAdmin(pid) then
-        say(pid, "admin only. Admins: " .. table.concat(cfg.admins, ", "))
-        return 1
+    local fromConsole = pid == CONSOLE
+    local pfx = fromConsole and "lap " or "/"
+    -- a line everyone sees in chat; the console sees it too
+    local function all(msg) say(-1, msg); if fromConsole then reply(msg) end end
+    -- /mark, /start, /finish need a car: the typer's, or from the console the named player's
+    local function askPos(what)
+        local target, r = pid, tonumber(args[3])
+        posAsked[pid] = nil                 -- a player's own /mark: not the console's any more
+        if fromConsole then
+            local who = args[3]
+            if not who then reply("needs a player name: lap " .. what .. " <name> [radius]  (that player's car is the spot)"); return end
+            local id, pname = findPlayer(who)
+            if not id then reply(pname); return end
+            target, r = id, tonumber(args[4])
+            posAsked[id] = what
+            reply(string.format("asked %s (id %d) where their car is for the %s; the answer goes to them and to kkLap.log (this console)", pname, id, what))
+        end
+        MP.TriggerClientEventJson(target, "kkLap_getpos", { r = r, what = what })
     end
-    if cmd == "dj" and args[3] and not isAdmin(pid) then say(pid, "admin only"); return 1 end
 
     if cmd == "help" then
-        for _, l in ipairs(PLAYER_HELP) do say(pid, l) end
-        if isAdmin(pid) then
-            for _, l in ipairs(ADMIN_HELP) do say(pid, l) end
-            if #cfg.admins == 0 then say(pid, "NO ADMINS SET: everyone can change things. /admin add <name> locks it.") end
+        if fromConsole then for _, l in ipairs(CONSOLE_HELP) do reply(l) end
+            reply("adminchat is " .. (cfg.adminChat and "on: admins may also type the /commands in game chat" or "off: admin commands work here only"))
+            if #cfg.admins == 0 and cfg.adminChat then reply("NO ADMINS SET: with adminchat on, everyone can change things in chat. lap admin add <name> locks it.") end
+        else
+            for _, l in ipairs(PLAYER_HELP) do reply(l) end
+            if cfg.adminChat and isAdmin(pid) then
+                for _, l in ipairs(ADMIN_HELP) do reply(l) end
+                if #cfg.admins == 0 then reply("NO ADMINS SET: everyone can change things. /admin add <name> locks it.") end
+            else
+                reply("admins: use the server console (type lap help there)")
+            end
         end
-    elseif cmd == "oldhelp" then
-        say(pid, "every command works without the lap word too: /mark, /start, /times, /race ...")
-        say(pid, "/lap mark [radius]  - checkpoint at your car (1st = start/finish)")
-        say(pid, "/lap start [radius]  - move the start line here, checkpoints kept")
-        say(pid, "/lap finish [radius] | finish same  - separate finish line here (point-to-point), or back to a loop")
-        say(pid, "/lap times  - best lap per player, with sectors")
-        say(pid, "/lap music <name> [0-1] | music stop  - play art/sound/kkLap/<name>.ogg for everyone")
-        say(pid, "/dj [new text]  - tell everyone where the Discord DJ set is")
-        say(pid, "/lap line paint|draw | set lineWidth <m>  - the start/finish line look")
-        say(pid, "/lap race [seconds]  - countdown for everyone sitting in the start bubble (or honk in the bubble)")
-        say(pid, "/lap autostart on|off | set countdown <s>")
-        say(pid, "/lap list | clear | undo | reset | debug on|off | markers on|off | announce on|off")
-        say(pid, "/lap set minLapMs <n> | set defaultRadius <n> | set markerAlpha 0-255 | set minLaps 2 | set pointsMinDrivers 3")
     elseif cmd == "mark" then
-        -- ask the client for its current vehicle position; reply comes to onPosReply
-        MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]), what = "mark" })
+        askPos("mark")                      -- reply comes to onPosReply
     elseif cmd == "start" then
-        MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]), what = "start" })
+        askPos("start")
     elseif cmd == "finish" and args[3] == "same" then
-        cfg.finish = nil; trackChanged(); saveCfg(); sendCfg(-1); say(pid, "finish line removed: start line is the finish again (loop)")
+        cfg.finish = nil; trackChanged(); saveCfg(); sendCfg(-1); reply("finish line removed: start line is the finish again (loop)")
     elseif cmd == "finish" and #cfg.checkpoints == 0 then
-        say(pid, "mark the start first (/start), then the finish")   -- v0.24: a finish alone left the client without a cp1
+        reply("mark the start first (" .. pfx .. "start), then the finish")   -- v0.24: a finish alone left the client without a cp1
     elseif cmd == "finish" then
-        MP.TriggerClientEventJson(pid, "kkLap_getpos", { r = tonumber(args[3]), what = "finish" })
+        askPos("finish")
     elseif cmd == "list" then
-        if #cfg.checkpoints == 0 then say(pid, "no checkpoints") end
-        if cfg.finish then say(pid, string.format("finish: %.1f %.1f %.1f r=%.1f (point-to-point)", cfg.finish.x, cfg.finish.y, cfg.finish.z, cfg.finish.r)) end
+        if #cfg.checkpoints == 0 then reply("no checkpoints") end
+        if cfg.finish then reply(string.format("finish: %.1f %.1f %.1f r=%.1f (point-to-point)", cfg.finish.x, cfg.finish.y, cfg.finish.z, cfg.finish.r)) end
         for i, c in ipairs(cfg.checkpoints) do
-            say(pid, string.format("%d: %.1f %.1f %.1f r=%.1f", i, c.x, c.y, c.z, c.r))
+            reply(string.format("%d: %.1f %.1f %.1f r=%.1f", i, c.x, c.y, c.z, c.r))
         end
     elseif cmd == "clear" then
-        cfg.checkpoints = {}; cfg.finish = nil; trackChanged(); board = {}; saveCfg(); saveBoard(); sendCfg(-1); say(pid, "checkpoints and finish cleared, best times wiped (laps.log keeps every lap)")
+        cfg.checkpoints = {}; cfg.finish = nil; trackChanged(); board = {}; saveCfg(); saveBoard(); sendCfg(-1); reply("checkpoints and finish cleared, best times wiped (laps.log keeps every lap)")
     elseif cmd == "undo" then
         table.remove(cfg.checkpoints)
         local also = ""
         if #cfg.checkpoints == 0 and cfg.finish then cfg.finish = nil; also = ", finish line removed too (no start left)" end   -- v0.24
-        trackChanged(); saveCfg(); sendCfg(-1); say(pid, "last checkpoint removed, " .. #cfg.checkpoints .. " left" .. also)
+        trackChanged(); saveCfg(); sendCfg(-1); reply("last checkpoint removed, " .. #cfg.checkpoints .. " left" .. also)
     elseif cmd == "reset" then
-        trackChanged(); saveCfg(); sendCfg(-1); say(pid, "all timing reset")   -- the new trackRev clears every client's state
+        trackChanged(); saveCfg(); sendCfg(-1); reply("all timing reset")   -- the new trackRev clears every client's state
     elseif cmd == "race" and args[3] == "stop" then
         -- v0.24: a countdown can be called off. Clients get a cancel (their "counting" goes off,
         -- else every honk is refused), and the waiting cars must honk again.
@@ -627,40 +870,53 @@ function onChatMessage(pid, name, msg)
             race.active = false; MP.CancelEventTimer("kkLap_tick")
             for _, e in pairs(bubble) do if not e.started then e.ready = false end end
             MP.TriggerClientEventJson(-1, "kkLap_count", { cancel = true })
-            say(-1, "countdown cancelled"); log("I", "countdown cancelled by " .. name)
+            all("countdown cancelled"); log("I", "countdown cancelled by " .. name)
         else
-            say(pid, "no countdown running")
+            reply("no countdown running")
         end
     elseif cmd == "race" then
         local sec = tonumber(args[3])
         if sec and sec == sec then cfg.countdown = math.floor(math.max(1, math.min(60, sec))) end   -- 1..60 (v0.24)
-        startCountdown(name)
+        local ok, why = startCountdown(name)
+        if ok then if fromConsole then reply("countdown started, " .. race.left .. " s") end
+        else reply("no countdown: " .. why); log("I", "race by " .. name .. ": no countdown: " .. why) end
     elseif cmd == "autostart" then
-        onOff(pid, args, "autoStart", "autostart", false)
+        onOff(reply, pfx, args, "autoStart", "autostart", false)
     elseif cmd == "line" and (args[3] == "paint" or args[3] == "draw") then
-        cfg.lineStyle = args[3]; saveCfg(); sendCfg(-1); say(pid, "start line style " .. args[3])
-    elseif cmd == "rules" and (args[3] == "add" or args[3] == "clear") and not isAdmin(pid) then
-        say(pid, "admin only: /rules add and /rules clear. /rules on its own opens the window.")   -- v0.24: was open to everyone
+        cfg.lineStyle = args[3]; saveCfg(); sendCfg(-1); reply("start line style " .. args[3])
     elseif cmd == "rules" and args[3] == "add" and args[4] then
-        table.insert(cfg.rules, table.concat(args, " ", 4)); saveCfg(); say(pid, "rule added (" .. #cfg.rules .. ")")
+        table.insert(cfg.rules, table.concat(args, " ", 4)); saveCfg(); reply("rule added (" .. #cfg.rules .. ")")
     elseif cmd == "rules" and args[3] == "clear" then
-        cfg.rules = {}; saveCfg(); say(pid, "rules cleared")
+        cfg.rules = {}; saveCfg(); reply("rules cleared")
+    elseif cmd == "rules" and fromConsole then
+        if #cfg.rules == 0 then reply("no rules (lap rules add <text>)") end
+        for i, l in ipairs(cfg.rules) do reply(i .. ". " .. l) end
     elseif cmd == "rules" then
         sendRules(pid, nil)                  -- nil = toggle on the client
     elseif cmd == "admin" and args[3] == "add" and args[4] then
-        table.insert(cfg.admins, args[4]); saveCfg(); say(-1, args[4] .. " is now a kkLap admin (by " .. name .. ")")
+        table.insert(cfg.admins, args[4]); saveCfg(); all(args[4] .. " is now a kkLap admin (by " .. name .. ")")
     elseif cmd == "admin" and args[3] == "remove" and args[4] then
         for i = #cfg.admins, 1, -1 do if cfg.admins[i] == args[4] then table.remove(cfg.admins, i) end end
-        saveCfg(); say(pid, "admins: " .. table.concat(cfg.admins, ", "))
+        saveCfg(); reply("admins: " .. table.concat(cfg.admins, ", "))
     elseif cmd == "admin" then
-        say(pid, "admins: " .. (#cfg.admins > 0 and table.concat(cfg.admins, ", ") or "none set (everyone)"))
+        reply("admins: " .. (#cfg.admins > 0 and table.concat(cfg.admins, ", ") or "none set (everyone)"))
+    elseif cmd == "adminchat" then
+        local a = args[3] and args[3]:lower()
+        if not fromConsole then
+            reply("adminchat is set from the server console only: lap adminchat on|off")
+        elseif a == "on" or a == "off" then
+            cfg.adminChat = (a == "on"); saveCfg()
+            reply("adminchat " .. a .. ": admin commands typed in game chat are " .. (cfg.adminChat and "allowed for admins (" .. (#cfg.admins > 0 and table.concat(cfg.admins, ", ") or "nobody set: EVERYONE") .. ")" or "refused, console only"))
+        else
+            reply("adminchat is " .. (cfg.adminChat and "on" or "off") .. "  (lap adminchat on|off to change)")
+        end
     elseif cmd == "dj" and args[3] then
-        cfg.djText = table.concat(args, " ", 3); saveCfg(); say(-1, "[DJ] " .. cfg.djText)
+        cfg.djText = table.concat(args, " ", 3); saveCfg(); all("[DJ] " .. cfg.djText)
     elseif cmd == "dj" then
-        say(-1, "[DJ] " .. tostring(cfg.djText))
+        all("[DJ] " .. tostring(cfg.djText))
     elseif cmd == "music" and args[3] == "stop" then
         cfg.musicAuto = nil; cfg.musicSeconds = nil; saveCfg(); sendCfg(-1)      -- clears the autoplay for joiners too
-        MP.TriggerClientEventJson(-1, "kkLap_music", { stop = true }); say(-1, "music stopped by " .. name)
+        MP.TriggerClientEventJson(-1, "kkLap_music", { stop = true }); all("music stopped by " .. name)
     elseif cmd == "music" and args[3] then
         -- /music <name> [volume 0-1] [once | <seconds>]   loops by default (DJ set); "once" plays through;
         -- a number of seconds is the fallback loop clock for games that give us no stoppable source
@@ -677,44 +933,105 @@ function onChatMessage(pid, name, msg)
         else
             MP.TriggerClientEventJson(-1, "kkLap_music", { file = args[3], vol = vol, loop = false })
         end
-        say(-1, string.format("music: %s (%s, volume %.0f%%%s)", args[3], name, vol * 100, loop and ", on repeat" or ""))
+        all(string.format("music: %s (%s, volume %.0f%%%s)", args[3], name, vol * 100, loop and ", on repeat" or ""))
         log("I", "music " .. args[3] .. " by " .. name)
     elseif cmd == "times" then
         local list = sortedBoard()
-        if #list == 0 then say(pid, string.format("no times on the board yet (a driver needs %d laps first)", cfg.minLaps)) end
+        if #list == 0 then reply(string.format("no times on the board yet (a driver needs %d laps first)", cfg.minLaps)) end
         local showPoints = #list >= cfg.pointsMinDrivers
-        if #list > 0 and not showPoints then say(pid, string.format("points appear once %d drivers have times (%d so far)", cfg.pointsMinDrivers, #list)) end
+        if #list > 0 and not showPoints then reply(string.format("points appear once %d drivers have times (%d so far)", cfg.pointsMinDrivers, #list)) end
         for i, it in ipairs(list) do
             if i > 10 then break end
             local pts = showPoints and string.format("  %d pts", pointsFor(it.e.bestMs, list[1].e.bestMs)) or ""
-            say(pid, string.format("%d. %s  %s  %s  (%d laps, @%d km/h, resets %d)%s", i, it.name, fmt(it.e.bestMs),
-                                   sectorsText(it.e.sectors or {}), it.e.laps or 0, it.e.kph or 0, it.e.resets or 0, pts))
+            reply(string.format("%d. %s  %s  %s  (%d laps, @%d km/h, resets %d)%s", i, it.name, fmt(it.e.bestMs),
+                                sectorsText(it.e.sectors or {}), it.e.laps or 0, it.e.kph or 0, it.e.resets or 0, pts))
         end
     elseif cmd == "announce" then
-        onOff(pid, args, "announceSplits", "sector announcements to everyone", false)
+        onOff(reply, pfx, args, "announceSplits", "sector announcements to everyone", false)
     elseif cmd == "markers" then
-        onOff(pid, args, "markers", "markers", true)
+        onOff(reply, pfx, args, "markers", "markers", true)
     elseif cmd == "hud" then
-        onOff(pid, args, "hud", "on-screen HUD", true)
+        onOff(reply, pfx, args, "hud", "on-screen HUD", true)
     elseif cmd == "debug" then
-        onOff(pid, args, "debug", "debug", true)
+        onOff(reply, pfx, args, "debug", "debug", true)
+    elseif cmd == "status" then
+        for _, l in ipairs(statusLines()) do reply(l) end
+    elseif cmd == "report" then
+        local path, n = writeReport()
+        if path then reply(string.format("report written: %s (status, config, board, last %d lines of kkLap.log). Download it from the panel's Files tab and upload it.", path, n))
+        else reply("could not write the report: " .. tostring(n)); log("E", "report not written: " .. tostring(n)) end
     elseif cmd == "set" and args[3] and tonumber(args[4]) then
         local rule, v = SET_KEYS[args[3]], tonumber(args[4])
         if not rule then
-            say(pid, "unknown numeric option " .. args[3])
+            reply("unknown numeric option " .. args[3])
         else
             if rule.integer and v == v then v = math.floor(v) end     -- v == v: not NaN
             if not (v == v and v >= rule[1] and v <= rule[2]) then
-                say(pid, string.format("%s must be %s..%s%s, not %s", args[3], tostring(rule[1]), tostring(rule[2]),
-                                       rule.integer and " (whole number)" or "", args[4]))
+                reply(string.format("%s must be %s..%s%s, not %s", args[3], tostring(rule[1]), tostring(rule[2]),
+                                    rule.integer and " (whole number)" or "", args[4]))
             else
-                cfg[args[3]] = v; saveCfg(); sendCfg(-1); say(pid, args[3] .. " = " .. tostring(v))
+                cfg[args[3]] = v; saveCfg(); sendCfg(-1); reply(args[3] .. " = " .. tostring(v))
             end
         end
     else
-        say(pid, "unknown /lap command, try /lap help")
+        reply(fromConsole and ("unknown kkLap command '" .. tostring(cmd) .. "', try: lap help") or "unknown /lap command, try /lap help")
     end
+end
+
+function onChatMessage(pid, name, msg)
+    -- v0.12: "/mark" works as well as "/lap mark". Any other "/word" is left alone for
+    -- other plugins. Unknown words after "/lap" still get the help text.
+    if msg:sub(1, 1) ~= "/" then return end
+    local args = {}
+    for w in msg:gmatch("%S+") do table.insert(args, w) end
+    if args[1] ~= "/lap" then
+        local short = args[1]:sub(2):lower()
+        if not SHORT[short] then return end           -- not ours
+        table.insert(args, 1, "/lap")                 -- "/mark 10" -> "/lap mark 10"
+        args[2] = short
+    end
+    local cmd = args[2] or "help"
+    local function reply(m) say(pid, m) end
+    if isAdminCmd(cmd, args) then
+        if cmd == "adminchat" then reply("adminchat is set from the server console only: lap adminchat on|off"); return 1 end
+        if not cfg.adminChat then
+            -- v0.25: admins included. Logged, so "it did nothing" has an answer in kkLap.log
+            reply("admin commands run from the server console only")
+            log("I", string.format("chat command refused (adminChat off, console only): %s: %s", tostring(name), msg))
+            return 1
+        end
+        if not isAdmin(pid) then
+            if cmd == "rules" then reply("admin only: /rules add and /rules clear. /rules on its own opens the window.")   -- v0.24
+            elseif cmd == "dj" then reply("admin only")
+            else reply("admin only. Admins: " .. table.concat(cfg.admins, ", ")) end
+            log("I", string.format("chat command refused (not an admin): %s: %s", tostring(name), msg))
+            return 1
+        end
+    end
+    runCommand(pid, args, reply, name)
     return 1
+end
+
+-- v0.25: the server console. BeamMP (TConsole.cpp RunAsCommand) fires onConsoleInput with every
+-- line typed there; a returned string is printed, nil means "not mine" (BeamMP then says
+-- "Unknown command" unless another plugin answered, and its own words like status and help still run).
+function onConsoleInput(line)
+    if type(line) ~= "string" then return nil end
+    local args = {}
+    for w in line:gmatch("%S+") do table.insert(args, w) end
+    local head = args[1] and args[1]:lower()
+    if head ~= "lap" and head ~= "/lap" and head ~= "kklap" then return nil end   -- not ours
+    args[1] = "/lap"
+    if args[2] then args[2] = args[2]:lower() end
+    log("CONSOLE", line)                                    -- every console command leaves a record
+    local out = {}
+    local ok, err = pcall(runCommand, CONSOLE, args, function(m) out[#out + 1] = tostring(m) end, "console")
+    if not ok then
+        log("E", "console command failed: " .. line .. ": " .. tostring(err))
+        out[#out + 1] = "kkLap: that command failed (" .. tostring(err) .. "), it is in kkLap.log"
+    end
+    if #out == 0 then out[1] = "ok" end
+    return table.concat(out, "\n")
 end
 
 -- ---------------------------------------------------------------- lifecycle
@@ -723,9 +1040,10 @@ function onPlayerJoin(pid)
     if cfg.rulesOnJoin then sendRules(pid, true) end
 end
 function onPlayerDisconnect(pid)
-    for k in pairs(bubble) do
-        if k:match("^" .. pid .. ":") then bubble[k] = nil end
+    for k, e in pairs(bubble) do
+        if k:match("^" .. pid .. ":") then bubble[k] = nil; log("I", string.format("bubble -%s (now %d, player left)", tag(e), bubbleSize())) end
     end
+    clientVer[pid], verWarned[pid], alive[pid], posAsked[pid] = nil, nil, nil, nil
     for k in pairs(runs) do
         if k:match("^" .. pid .. ":") then runs[k] = nil end
     end
@@ -747,6 +1065,8 @@ function onInit()
     MP.RegisterEvent("kkLap_invalid",      "onInvalid")
     MP.RegisterEvent("kkLap_jump",         "onJump")
     MP.RegisterEvent("kkLap_tick",         "onTick")
+    MP.RegisterEvent("kkLap_ack",          "onAck")            -- v0.25: client got the config, says its version
+    MP.RegisterEvent("onConsoleInput",     "onConsoleInput")   -- v0.25: "lap ..." typed in the server console
     log("I", PLUGIN .. " v" .. VERSION .. " loaded on " .. MP.GetOSName())
     -- a (re)load of this file starts with no runs and no bubble, so it is a track change for the
     -- clients too, and they must hear it: on a hot reload nobody re-joins, so nobody would ask for

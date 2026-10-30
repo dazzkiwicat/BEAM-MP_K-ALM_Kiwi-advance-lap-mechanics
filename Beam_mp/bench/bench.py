@@ -78,6 +78,7 @@ S.globals().MP = S.table(
     RegisterEvent=s_register, CreateTimer=s_timer, CreateEventTimer=s_create_event_timer, CancelEventTimer=s_cancel_event_timer, TriggerClientEventJson=s_trigger_client_json,
     SendChatMessage=s_send_chat, GetPlayerName=lambda pid: "Darren" if pid == 1 else "p%d" % pid,
     GetOSName=lambda: "Linux", GetPlayerCount=lambda: 1,
+    GetPlayers=lambda: S.table_from({1: "Darren"}),           # BeamMP: { [id] = name } (TLuaEngine.cpp Lua_GetPlayers)
     GetPlayerIdentifiers=lambda pid: S.table(beammp="42", ip="1.2.3.4") if pid == 1 else S.table(ip="5.6.7.8"),
 )
 S.globals().Util = S.table(
@@ -195,6 +196,8 @@ M.onExtensionLoaded()                            # client asks server for config
 
 # ------------------------------------------------------------------ helpers
 def chat(msg): return S.globals()[s_handlers["onChatMessage"]](1, "Darren", msg)
+def console(line): return S.globals()[s_handlers["onConsoleInput"]](line)   # a line typed in the server console (v0.25)
+def kklog(): return (work / "Resources/Server/kkLap/kkLap.log").read_text().splitlines()
 def chat_as(pid, name, msg): return S.globals()[s_handlers["onChatMessage"]](pid, name, msg)
 timer_frames = []   # (clock_ms, [(text, colour)] drawn in the ##kkLapTimer window, or None if not drawn) per frame (v0.23)
 hud_seen = set()    # every text that was on the HUD queue at the end of any frame (v0.23)
@@ -232,6 +235,47 @@ failures = []
 def check(cond, what):
     print(("ok   " if cond else "FAIL ") + what)
     if not cond: failures.append(what)
+
+# ------------------------------------------------------------------ scenario v0.25a: admin commands from the server console only
+# Darren 30/10: "i need ONLY admin commands for server side only terminal". BeamMP fires
+# onConsoleInput with each console line; a returned string is printed, nil = not ours.
+G0 = S.globals()
+check(G0.cfg["adminChat"] == False, "v0.25: adminChat is off by default")
+mark = len(chat_out); cd0 = G0.cfg["countdown"]
+check(chat("/set countdown 7") == 1 and G0.cfg["countdown"] == cd0 and any(p == 1 and "admin commands run from the server console only" in m for p, m in chat_out[mark:]),
+      "v0.25: /set countdown 7 in chat from pid 1 is refused with the console-only line, cfg unchanged")
+r = console("lap set countdown 7")
+check(r == "countdown = 7" and G0.cfg["countdown"] == 7, "v0.25: lap set countdown 7 from the console changes cfg and returns the confirmation (%r)" % r)
+check(any("[KKLAP][CONSOLE] lap set countdown 7" in l for l in kklog()), "v0.25: the console line is in kkLap.log as [CONSOLE] lap set countdown 7")
+check(console("status") is None and console("kick Bob") is None and console("") is None, "v0.25: a console line that is not ours (BeamMP's own status, kick) returns nil")
+h = console("lap help")
+check(isinstance(h, str) and "adminchat" in h and "lap mark <player>" in h and "/mark" not in h, "v0.25: lap help on the console lists the admin commands in console spelling, adminchat too")
+check(console("LAP SET countdown 5") == "countdown = 5" and console("/lap set countdown 6") == "countdown = 6" and console("kklap set countdown 5") == "countdown = 5",
+      "v0.25: lap, /lap and kklap all work, any case")
+check("unknown kkLap command" in console("lap frobnicate") and "lap help" in console("lap frobnicate"), "v0.25: lap <unknown word> is answered with the way to help")
+r = console("lap mark")
+check(r.startswith("needs a player name: lap mark <name>"), "v0.25: lap mark with no name says it needs a player name (%r)" % r)
+E0 = len(events_to_client); r = console("lap mark Darren")
+check(any(p == 1 and n == "kkLap_getpos" and json.loads(d).get("what") == "mark" for p, n, d in events_to_client[E0:]) and "asked Darren" in r,
+      "v0.25: lap mark Darren sends kkLap_getpos to pid 1, found by name through MP.GetPlayers")
+check("no player called Zed" in console("lap start Zed") and "Darren" in console("lap start Zed"), "v0.25: an unknown name is refused with who is on")
+check(len(G0.cfg["checkpoints"]) == 0, "v0.25: (setup) no car in seat 0, so nothing was marked")
+mark = len(chat_out); chat_as(2, "Bob", "/help")
+bob = [m for p, m in chat_out[mark:] if p == 2]
+check(any("admins: use the server console" in m for m in bob) and not any("/mark" in m or "/set" in m for m in bob),
+      "v0.25: chat /help lists no admin commands while adminChat is off, says admins: use the server console")
+mark = len(chat_out)
+check(chat("/times") == 1 and any("no times on the board yet" in m for _, m in chat_out[mark:]), "v0.25: player commands still work in chat (/times)")
+mark = len(chat_out); chat("/adminchat on"); chat("/rules add sneaky"); chat("/dj sneaky")
+check(G0.cfg["adminChat"] == False and not any("sneaky" in r for r in G0.cfg["rules"].values()) and G0.cfg["djText"] != "sneaky"
+      and len([m for p, m in chat_out[mark:] if p == 1 and "console only" in m]) == 3,
+      "v0.25: /adminchat, /rules add and /dj <text> from chat are refused too")
+r = console("lap adminchat on")
+check(G0.cfg["adminChat"] == True and "allowed for admins" in r and json.load(open("Resources/Server/kkLap/config.json"))["adminChat"] == True,
+      "v0.25: lap adminchat on from the console turns chat admin commands on, saved (%r)" % r)
+mark = len(chat_out); chat("/set countdown 6")
+check(G0.cfg["countdown"] == 6 and any(p == 1 and "countdown = 6" in m for p, m in chat_out[mark:]), "v0.25: after lap adminchat on, chat /set works for an admin")
+chat("/set countdown 5")
 
 # ------------------------------------------------------------------ scenario 0: empty track still proves the loop is alive
 # v0.3.0 put the 5 s alive line below the "no checkpoints" exit, so the live test could not
@@ -1055,6 +1099,128 @@ def s_v24_11():
     velocities[100] = (27.78, 0.0, 0.0)
 guard("v0.24 #11", s_v24_11)
 check(not dropped, "no client event was dropped by the server (after the v0.24 scenarios)")
+
+# ================================================================== v0.25: self-explaining logs (Darren, 30/10:
+# "any more debugging you can write into this in case of failure next time, save me explaining it")
+def s_v25_logs():
+    fresh_track([(0, 0, 0), (100, 0, 0)], own=(100, 101), park=(0, 0, 0))
+    positions[101] = (2, 0, 0); velocities[100] = (0.0, 0.0, 0.0); velocities[101] = (0.0, 0.0, 0.0)
+    mark = len(server_log)
+    for _ in range(5): tick()
+    check(any("bubble +Darren#101 (now 2)" in l for l in server_log[mark:]) or any("bubble +Darren#100 (now 2)" in l for l in server_log[mark:]),
+          "v0.25 b: a car entering the bubble is logged as bubble +name#vid (now N)")
+    mark = len(server_log); M.onHorn(100)
+    got = server_log[mark:]
+    arm = [l for l in got if "arm Darren#100:" in l]
+    check(arm and "1 of 2 ready" in arm[0] and "Darren#100 ready" in arm[0] and "Darren#101 waiting" in arm[0] and any("no countdown: waiting on Darren#101" in l for l in got),
+          "v0.25 a: the honk logs the roster it looked at and who it waits on (%s)" % (arm[:1] or got[-3:]))
+    mark = len(server_log); M.onHorn(101)
+    check(any("arm Darren#101: 2 of 2 ready [Darren#100 ready, Darren#101 ready]" in l and l.endswith("-> countdown") for l in server_log[mark:]),
+          "v0.25 a: the honk that starts it logs the same roster line ending -> countdown")
+    for _ in range(120): tick()                                   # GO
+    r = console("lap race")
+    check("no countdown: GO was" in r, "v0.25: lap race right after a GO says why there is no countdown (%r)" % r)
+    mark = len(server_log); positions[101] = (300, 300, 0); tick()
+    check(any("bubble -Darren#101 (now 1)" in l for l in server_log[mark:]), "v0.25 b: a car leaving the bubble is logged as bubble -name#vid (now N)")
+    r = console("lap status")
+    check(isinstance(r, str) and "bubble: 1" in r and "race: active false" in r and "run Darren#100: next cp 2" in r and "adminChat true" in r and "trackRev" in r,
+          "v0.25 f: lap status shows the race, the bubble roster, each run and the key cfg values")
+    check("started (GO" in r, "v0.25 f: the bubble roster in lap status says ready/started per car")
+    # c: refusals carry their numbers; a not-counted lap goes to laps.log with its reason
+    mark = len(server_log)
+    G.onCross(1, json.dumps({"vid": 555, "cp": 2}))
+    check(any("cross refused Darren#555: got cp 2, wanted cp 1" in l for l in server_log[mark:]), "v0.25 c: a wrong checkpoint logs got cp and wanted cp")
+    G.onCross(1, json.dumps({"vid": 555, "cp": 1})); clock_ms[0] += 300
+    G.onCross(1, json.dumps({"vid": 555, "cp": 2})); clock_ms[0] += 300
+    G.onCross(1, json.dumps({"vid": 555, "cp": 1}))
+    check(any("lap rejected, too short: Darren#555 600 ms < minLapMs 5000" in l for l in server_log[mark:]), "v0.25 c: a too-short lap logs its ms against minLapMs")
+    G.onInvalid(1, json.dumps({"vid": 555, "reason": "bench teleport 40 m"})); clock_ms[0] += 3000
+    G.onCross(1, json.dumps({"vid": 555, "cp": 2})); clock_ms[0] += 3000
+    G.onCross(1, json.dumps({"vid": 555, "cp": 1}))
+    check(any("LAP NOT COUNTED Darren#555 0:06.000 (invalidated: bench teleport 40 m)" in l for l in server_log[mark:])
+          and "NOT COUNTED  0:06.000  (bench teleport 40 m)" in pathlib.Path("Resources/Server/kkLap/laps.log").read_text(),
+          "v0.25 c: a lap not counted logs and writes to laps.log the reason it was invalidated")
+    G.onCross(1, json.dumps({"vid": 556, "cp": 1, "go": True}))
+    check(any("GO cross refused Darren#556: GO was" in l and "(limit 5000)" in l for l in server_log[mark:]), "v0.25 c: a refused GO start says which condition failed, with the numbers")
+    # g: one file to upload
+    r = console("lap report")
+    rp = pathlib.Path("Resources/Server/kkLap/report.txt")
+    txt = rp.read_text() if rp.exists() else ""
+    check("report written: Resources/Server/kkLap/report.txt" in r and all(k in txt for k in ("== status", "bubble: 1", "== config", '"adminChat"', "== board", "[KKLAP][CONSOLE] lap report")),
+          "v0.25 g: lap report writes report.txt with status, config, board and the log tail, and replies with the path")
+    # d: client version
+    check(not any("[KKLAP][W] client" in l for l in server_log), "v0.25 d: the bench client (same version) gets no version warning")
+    mark = len(server_log); mc = len(chat_out)
+    G.onAck(1, json.dumps({"v": "0.20"})); G.onAck(1, json.dumps({"v": "0.20"})); G.onClientDbg(1, "extension v0.20 loaded, markers available")
+    w = [l for l in server_log[mark:] if "[KKLAP][W] client Darren runs v0.20, server is v0.25" in l]
+    told = [m for p, m in chat_out[mc:] if p == 1 and "kkLap: your client mod is v0.20, server is v0.25, rejoin to re-download" in m]
+    check(len(w) == 1 and len(told) == 1, "v0.25 d: a client on another version: one [W] line and one chat line to that player (%d, %d)" % (len(w), len(told)))
+    G.onAck(1, json.dumps({"v": "0.25"}))
+    # e: the alive relay, once a minute per client unless it changes
+    sent0 = sum(1 for n, d in events_to_server if n == "kkLap_dbg" and d.startswith("alive"))
+    mark = len(server_log)
+    for _ in range(1300): tick()                                 # 65 s, own map unchanged
+    sent = sum(1 for n, d in events_to_server if n == "kkLap_dbg" and d.startswith("alive")) - sent0
+    logged = [l for l in server_log[mark:] if "[KKLAP][C1] alive" in l]
+    check(sent >= 12 and 1 <= len(logged) <= 2, "v0.25 e: alive sent %d times in 65 s, logged %d (once a minute)" % (sent, len(logged)))
+    mark = len(server_log); mc = len(client_log); own_vids[:] = [100]
+    for _ in range(110): tick()
+    check(any("[KKLAP][C1] alive, own vehicles: 100 (v0.25)" in l for l in server_log[mark:]), "v0.25 e: an alive line that says something new is logged at once")
+    check(any("vehicle 101 pruned (no longer ours, was in bubble: no)" in l for l in client_log[mc:]), "v0.25 h: a pruned car is logged with whether it was in the bubble")
+    # k: an error inside onUpdate is caught, counted, relayed once; the extension keeps running
+    real = C.globals().MPVehicleGE["getOwnMap"]
+    C.execute("MPVehicleGE.getOwnMap = function() error('bench: injected') end")
+    mc, ms, err = len(client_log), len(server_log), None
+    try:
+        for _ in range(12): tick()
+    except Exception as e: err = str(e).splitlines()[0]
+    C.globals().MPVehicleGE["getOwnMap"] = real
+    counts = {k: v for k, v in M.frameErrors.items() if "bench: injected" in k}
+    check(err is None and list(counts.values()) == [12], "v0.25 k: an onUpdate error does not escape and is counted (%s, %s)" % (err, counts))
+    check(sum("onUpdate error x1:" in l and "bench: injected" in l for l in client_log[mc:]) == 1
+          and sum("[KKLAP][C1] ERROR onUpdate error x1:" in l for l in server_log[ms:]) == 1, "v0.25 k: logged once and relayed to the server once")
+    X0 = len(events_to_server); velocities[100] = (27.78, 0.0, 0.0)
+    drive(100, [(50, 0, 0), (100, 0, 0)])
+    for _ in range(200): tick()
+    check(crosses(X0, 100) and any("onUpdate error x12:" in l for l in client_log[mc:]), "v0.25 k: the extension keeps ticking (car 100 still crosses) and the count x12 is logged")
+    # l: why the lap state was reset or kept
+    mc = len(client_log); chat("/hud on")
+    check(any("same track (rev" in l and "lap state kept" in l for l in client_log[mc:]) and any("own map at cfg time: [100]" in l for l in client_log[mc:]),
+          "v0.25 l: a config push logs same track, kept, and the own map")
+    mc = len(client_log); chat("/lap reset")
+    check(any("track changed (rev" in l and "lap state reset" in l for l in client_log[mc:]), "v0.25 l: /reset logs track changed, reset")
+guard("v0.25 logs", s_v25_logs)
+check(any("vehicle 100 spawned (own: yes)" in l for l in client_log), "v0.25 h: a spawned car is logged with whether it is ours")
+check(any("vehicle 101 destroyed (game hook, was in bubble: yes" in l for l in client_log), "v0.25 h: a destroyed car is logged with whether it was in the bubble")
+check(any("music: want art/sound/kkLap/" in l for l in client_log) and any("music playing art/sound/kkLap/kiwi.ogg vol 0.30 via playOnce" in l for l in client_log)
+      and any("music: stopped (level exit)" in l for l in client_log), "v0.25 i: music decisions carry their reason (want, via playOnce, stopped on level exit)")
+check(any("first draw: display 960 x 1080 px, big text" in l for l in client_log), "v0.25 j: the first HUD draw logs the display size and the big-text method")
+
+# ---- v0.25: the console after the admin list is locked; adminChat off again
+def s_v25_console():
+    check(G.cfg["admins"] == S.table_from(["Darren"]) or list(G.cfg["admins"].values()) == ["Darren"], "v0.25: (setup) admins locked to Darren")
+    check(console("lap admin list") == "admins: Darren", "v0.25: the console is always admin (pid -2), whoever is on the list")
+    mark = len(chat_out); chat_as(2, "Bob", "/help"); chat("/help")
+    bob = [m for p, m in chat_out[mark:] if p == 2]; dar = [m for p, m in chat_out[mark:] if p == 1]
+    check(any("admins: use the server console" in m for m in bob) and not any("/mark" in m for m in bob) and any("/mark" in m for m in dar),
+          "v0.25: adminChat on: /help shows admin commands to an admin only; a non-admin is told to use the console")
+    r = console("lap adminchat off")
+    check(G.cfg["adminChat"] == False and "console only" in r, "v0.25: lap adminchat off")
+    mark = len(chat_out); cd = G.cfg["countdown"]; chat("/set countdown 9")
+    check(G.cfg["countdown"] == cd and any(p == 1 and "admin commands run from the server console only" in m for p, m in chat_out[mark:])
+          and any("chat command refused (adminChat off, console only): Darren: /set countdown 9" in l for l in kklog()),
+          "v0.25: adminChat off: an admin's chat /set is refused too, and the refusal is logged")
+    G.onPlayerJoin(1)
+    check(rs.admin is None, "v0.25: adminChat off: the rules window carries no admin lines")
+    rs.open = False
+    own_vids[:] = [100]; seat0_vid[0] = 100; positions[100] = (50, 50, 0)
+    n0 = len(G.cfg["checkpoints"]); mark = len(chat_out); ms = len(server_log)
+    r = console("lap mark Darren 12"); M.onSurface(100, False, "FL=GRASS")
+    cps = json.load(open(cfgfile))["checkpoints"]
+    check(len(cps) == n0 + 1 and cps[-1]["r"] == 12 and any(p == 1 and "checkpoint %d marked" % (n0 + 1) in m for p, m in chat_out[mark:])
+          and any("position from Darren (asked from the console): checkpoint %d marked" % (n0 + 1) in l for l in server_log[ms:]),
+          "v0.25: lap mark Darren 12 marks at Darren's car with r 12; the result goes to Darren and to the console log")
+guard("v0.25 console", s_v25_console)
 
 print()
 print("bench dir:", work)

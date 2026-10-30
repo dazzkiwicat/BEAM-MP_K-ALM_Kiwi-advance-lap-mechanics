@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-30 by Claude (v0.22). Earlier: 2026-10-26. Current version: 0.3.0 (server main.lua and client zip share it). Branch: claude/blissful-mccarthy-eg6jed
+Updated: 2026-10-30 by Claude (v0.25). Earlier: 2026-10-26. Current version: 0.3.0 (server main.lua and client zip share it). Branch: claude/blissful-mccarthy-eg6jed
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -23,7 +23,7 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. v0.25 (admin commands from the server console only; self-explaining logs, lap status, lap report) bench 244, NOT yet live. Still to prove with two cars: everyone-honks start, race numbers. Admin list not yet locked. ( commands without the lap word; music broadcast; resets counted, position resets invalidate, 2-lap minimum, points; /lap start, /lap finish, tarseal-only painted lines) bench-passed 75 checks, NOT yet live since v0.7.1. Next move: Darren commits a track; upload v0.14. Next move: upload v0.7.1; if no big text, add the two UI apps with Alt+U.
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -541,6 +541,46 @@ v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running 
   Also: no config.json = trackRev not written at start (nothing to protect). TextUnformatted and the
   unicycle name are seen in the BeamNG/BeamMP sources, not live.
   NEXT: upload main.lua + kkLap_v0.24.zip (delete kkLap_v0.23.zip), restart, /hud on mid-lap: the lap must still count.
+
+- 30/10: v0.25, admin commands from the server console only, and logs that explain themselves.
+  Bench 244 (was 194). Darren: "i need ONLY admin commands for server side only terminal" and "any
+  more debugging you can write into this in case of failure next time, save me explaining it".
+  Console: onConsoleInput (BeamMP TConsole.cpp RunAsCommand: a returned string is printed, nil = not
+  ours) takes lines starting "lap ", "/lap " or "kklap " (any case) and runs runCommand, the one
+  command body chat uses too, with pid -2 (CONSOLE, isAdmin always true) and the answer returned as
+  one string. Every console line is logged as [KKLAP][CONSOLE] <line>. mark/start/finish from the
+  console take a player name (MP.GetPlayers, TLuaEngine.cpp: { [id] = name }; exact any case, else a
+  unique prefix) and ask THAT player's client; the result goes to the player in chat and to
+  kkLap.log (so the console prints it). No name: "needs a player name: lap mark <name> [radius]".
+  Chat: cfg.adminChat (default false). Off: every admin command typed in chat (ADMIN_ONLY, plus
+  /rules add|clear and /dj <text>) answers "admin commands run from the server console only" and is
+  logged, admins included. On: the old isAdmin gate. lap adminchat on|off is console only. Chat /help
+  without adminchat (or for a non-admin) lists no admin commands: "admins: use the server console";
+  the rules window drops its admin lines the same way. /oldhelp is gone (it listed chat admin commands).
+  Logs: arm roster line ("arm Darren#100: 1 of 2 ready [...]" + "no countdown: <why>" or "-> countdown");
+  startCountdown returns the reason it refused (running, 10 s after GO, no start) and lap race shows
+  it; bubble +/- with the count (enter, leave, player left, cleared on a track change); GO line lists
+  the cars; cross refused (got cp, wanted cp, rate-limited 5 s per car); too short (ms vs minLapMs);
+  not counted with the invalidate reason (laps.log too, was always "position reset"); GO start
+  refused says which of its four conditions failed; invalid ignored; board not yet (laps of minLaps).
+  Version: the client sends M.VERSION on kkLap_getcfg and on a new kkLap_ack per config, and in its
+  alive line; the server also reads "extension vX loaded" (v0.24 clients say that). A mismatch: one
+  [W] line and one chat line to that player per connection. Alive: logged once a minute per client
+  or at once when it changes (sent every 5 s, it was 80% of the log). Lines starting "ERROR " are
+  logged with debug off too. lap status / lap report (Resources/Server/kkLap/report.txt: status,
+  config, board, last 300 kkLap.log lines; Util.JsonPrettify when there).
+  Client: onUpdate and onPreRender run inside pcall; an error is logged and relayed once ("onUpdate
+  error x1: ..."), counted, the count logged every 10 s while it grows, and the next frame runs.
+  Vehicle spawned (own yes/no) / destroyed / pruned (was in bubble yes/no); own map at cfg time;
+  cfg line says why the lap state was reset or kept; music: want / no car yet / via createSource or
+  playOnce / retry k of 10 / stopped (level exit); first HUD or timer draw logs DisplaySize and the
+  big-text method; HUD, timer and rules failures go through dbgErr (always relayed).
+  UNCHECKED live: a line typed in the Pterodactyl Console tab reaches onConsoleInput (the panel's
+  terminal is the server's stdin; seen in the source, not tried) and the printed reply shows there;
+  MP.GetPlayers name lookup on the real server (source only); Util.JsonPrettify output in report.txt;
+  the onUpdate pcall wrapper with the real game's extension loader (M.onUpdate is now a closure).
+  NEXT: upload main.lua + kkLap_v0.25.zip (delete kkLap_v0.24.zip), restart, in the Console tab type
+  `lap help`, then `lap status`; in chat /set should say "server console only".
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

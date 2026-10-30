@@ -39,61 +39,122 @@ cloud session, or any PC): it reads laps.log through the Pterodactyl API and pos
 lines to a Discord webhook. Needs PTERO_URL, PTERO_API_KEY, PTERO_SERVER_ID, DISCORD_WEBHOOK
 in the environment, never in chat or git. Dry run: --local <laps.log> --dry-run.
 
-## Who may do what (v0.19)
-Players: /rules (the in-game window), /times, /help, /dj, and honking. Everything that
-changes the track or the settings is admin only. Admins are player names in config.json;
-while the list is empty everyone is admin, and the first "/admin add <name>" locks it.
-/admin list | add <name> | remove <name>.
+## Admin from the server console (v0.25)
+Every command that changes the track or the settings runs from the BeamMP server console, not
+from game chat. In the Pterodactyl panel: open the server, the **Console** tab, type at the prompt
+at the bottom, Enter. Start the line with `lap` (`/lap` and `kklap` work too, any case):
+    lap set countdown 5
+    lap music set.mp3 0.4
+    lap race stop
+    lap admin list
+    lap help           every admin command, in this spelling
+The answer prints right under the line. Every console line is written to kkLap.log as
+`[KKLAP][CONSOLE] <line>`, so every change leaves a record. Lines that are not kkLap's (BeamMP's own
+`status`, `kick`, `say` ...) are left to the server.
+The console has no car, so the three commands that need one take a player name: kkLap asks THAT
+player's game where their car is, and the result goes to them in chat and to kkLap.log / the console:
+    lap mark Darren [r]     lap start Darren [r]     lap finish Darren [r]
+(any case; the start of a name is enough when only one player matches).
+
+Chat admin commands are OFF by default: typed in chat, an admin command answers "admin commands
+run from the server console only" and does nothing, for admins too. `lap adminchat on` (console
+only) lets the admins in config.json (below) type them in chat again, as /mark, /set ...;
+`lap adminchat off` stops it. Player commands in chat never change: /rules, /times, /help, /dj
+(where the DJ is), honking.
+
+The admin commands (console spelling; with adminchat on, the same words work in chat as /word):
+    lap mark <player> [r]    drop a checkpoint at that player's car. First one is start/finish.
+    lap start <player> [r]   move the start line to their car. Every other checkpoint is kept. (v0.09)
+    lap finish <player> [r]  a separate finish line at their car: point-to-point course (hill climb, drag).
+    lap finish same    finish is the start line again (loop). Default.
+    lap list           show them
+    lap undo           remove the last one
+    lap clear          remove all
+    lap reset          wipe timing, keep checkpoints
+    lap race [sec]     countdown for everyone, GO starts every car in the start bubble (v0.6.0); sec 1..60
+    lap race stop      call a running countdown off; the cars in the bubble honk again (v0.24)
+    lap autostart on|off  a honk inside the start bubble starts that countdown (default on)
+    lap set countdown 5   (1..60)
+    lap line paint|draw  start/finish line: painted on the road, or flat drawn chequer (v0.8.0)
+    lap set lineWidth 10   metres across the road (1..50)
+    lap music <name> [0-10] [once|<sec>]  play art/sound/kkLap/<name>(.ogg, or name.mp3) on every client, on repeat; >1 boosts
+    lap music stop     (music also stops by itself when you leave the level, v0.19)
+    lap dj <text>      set where the Discord DJ set is; everyone sees it (v0.13)
+    lap times          best lap per player with sector times, resets and points, top 10
+    lap set minLaps 2        laps a driver needs before their best goes on the board (v0.10) (1..100)
+    lap set pointsMinDrivers 3   drivers needed before points show (1..100)
+    lap announce on|off  every sector to everyone in chat (default off; laps always announce)
+    lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
+    lap hud on|off     kkLap's own on-screen text, no UI app needed (default on, v0.22)
+    lap debug on|off   forward client debug lines to the server log
+    lap set minLapMs 5000    (0..3600000)
+    lap set markerAlpha 40   see-through-ness of the markers, 0 invisible, 255 solid (v0.5.2)
+    lap set defaultRadius 8  (1..100)   lap set musicVolume 0.5  (0..10)
+    lap rules | lap rules add <text> | lap rules clear
+    lap admin add|remove <name> | lap admin list
+    lap status         what the plugin sees right now (v0.25, see "When something goes wrong")
+    lap report         writes report.txt to upload (v0.25)
+    lap adminchat on|off
+The on|off commands with no word after them show the current value and change nothing (v0.24).
+set takes only the keys above, in range; whole-number keys are rounded down; anything else is
+refused with the range (v0.24: a countdown of 1e999 used to jam every race start).
+Config pushes (any admin command) no longer reset anyone's lap (v0.24). The config carries a
+track revision, trackRev, that moves only on mark, start, finish, finish same, undo, clear,
+reset and a server (re)start; only then do the clients and the server start every lap afresh.
+
+## Who may do what (v0.19, v0.25)
+The server console can do everything, always. Players in chat: /rules (the in-game window), /times,
+/help, /dj, and honking. With `lap adminchat on`, the admins may also use the admin commands in
+chat. Admins are player names in config.json; while the list is empty everyone counts as admin
+(only matters with adminchat on), and the first `lap admin add <name>` locks it.
 
 ## The rules window (v0.19)
 A window inside the game (the game's own ImGui, same as BeamMP's debug windows) opens on
-join and on /rules, with the rules text, the player commands, and the admin commands if you
-are one. "/rules add <text>" adds a rule line, "/rules clear" empties them (both admin only since
-v0.24; plain /rules is for everyone), "/set rulesOnJoin" is not a number so edit config.json to
-turn the join pop-up off.
+join and on /rules, with the rules text, the player commands, and (only while adminchat is on)
+the admin commands if you are one. `lap rules add <text>` adds a rule line, `lap rules clear`
+empties them; /rules on its own is for everyone. rulesOnJoin is not a number, so edit config.json
+to turn the join pop-up off.
 
-## In game
-Every command works with or without the lap word: /mark is /lap mark, /times is /lap times (v0.12).
-Other plugins' slash commands are left alone. The on|off commands (/autostart, /announce, /markers,
-/hud, /debug) with no word after them show the current value and change nothing (v0.24).
-    /lap mark          drop a checkpoint at your car. First one is start/finish.
-    /lap start [r]     move the start line to your car. Every other checkpoint is kept. (v0.09)
-    /lap finish [r]    a separate finish line at your car: point-to-point course (hill climb, drag).
-    /lap finish same   finish is the start line again (loop). Default.
-    /lap list          show them
-    /lap undo          remove the last one
-    /lap clear         remove all
-    /lap reset         wipe timing, keep checkpoints
-    /lap race [sec]    countdown for everyone, GO starts every car in the start bubble (v0.6.0); sec 1..60
-    /lap race stop     call a running countdown off; the cars in the bubble honk again (v0.24)
-    /lap autostart on|off  a honk inside the start bubble starts that countdown (default on)
-    /lap set countdown 5   (1..60)
-    /lap line paint|draw  start/finish line: painted on the road, or flat drawn chequer (v0.8.0)
-    /lap set lineWidth 10   metres across the road (1..50)
-    /lap music <name> [0-10] [once|<sec>]  play art/sound/kkLap/<name>(.ogg, or name.mp3) on every client, on repeat; >1 boosts
-    /lap music stop    (music also stops by itself when you leave the level, v0.19)
-    /dj [text]         tell everyone where the Discord DJ set is (text is remembered) (v0.13)
-    /lap times         best lap per player with sector times, resets and points, top 10
-    /lap set minLaps 2        laps a driver needs before their best goes on the board (v0.10) (1..100)
-    /lap set pointsMinDrivers 3   drivers needed before points show (1..100)
-    /lap announce on|off  every sector to everyone in chat (default off; laps always announce)
-    /lap markers on|off  draw the checkpoint spheres in the world (default on, v0.4.0)
-    /hud on|off        kkLap's own on-screen text, no UI app needed (default on, v0.22)
-    /lap debug on|off  forward client debug lines to the server log
-    /lap set minLapMs 5000    (0..3600000)
-    /lap set markerAlpha 40   see-through-ness of the markers, 0 invisible, 255 solid (v0.5.2)
-    /lap set defaultRadius 8  (1..100)   /lap set musicVolume 0.5  (0..10)
-/set takes only the keys above, in range; whole-number keys are rounded down; anything else is
-refused with the range (v0.24: /set countdown 1e999 used to jam every race start).
-Config pushes (any admin command) no longer reset anyone's lap (v0.24). The config carries a
-track revision, trackRev, that moves only on /mark, /start, /finish, /finish same, /undo, /clear,
-/reset and a server (re)start; only then do the clients and the server start every lap afresh.
+## In game (players)
+Every command works with or without the lap word: /times is /lap times (v0.12). Other plugins'
+slash commands are left alone.
+    /rules             open or close the rules window
+    /times             best lap per player with sector times, resets and points, top 10
+    /help              these commands
+    /dj                where the Discord DJ set is
+Honk in the start bubble to start (twice: start without the rest), see "Racing together".
+
+## When something goes wrong (v0.25)
+In the console: `lap report`. It writes Resources/Server/kkLap/report.txt: what `lap status`
+shows, the whole running config, the board, and the last 300 lines of kkLap.log. Download that
+one file from the panel's Files tab and upload it; nothing else is needed.
+`lap status` prints the same live picture in the console: version, players and which client mod
+version each runs, race state, who is in the start bubble (ready, waiting, started), each run
+(next checkpoint, lap start, laps, invalid and why), and the key settings.
+Every refusal in kkLap.log says why, with the numbers it looked at:
+    arm Darren#100: 1 of 2 ready [Darren#100 ready, Bob#7 waiting]
+    no countdown: waiting on Bob#7
+A honk (arm) from Darren's car 100: of the 2 cars waiting in the start bubble, 1 has honked; the
+list is everyone it counted. The countdown waits for Bob's car 7 (or Darren honks again). When it
+starts, the line ends "-> countdown". "no countdown: GO was 3.2 s ago ..." = honks are ignored
+for 10 s after a GO.
+    bubble +Darren#100 (now 2) / bubble -Darren#100 (now 1)   a car entered / left the start bubble
+    cross refused Darren#100: got cp 3, wanted cp 2            it skipped a checkpoint (radius?)
+    lap rejected, too short: Darren#100 600 ms < minLapMs 5000
+    LAP NOT COUNTED Darren#100 1:02.300 (invalidated: position reset, moved 30 m)   also in laps.log
+    GO cross refused Darren#100: GO was 6200 ms ago (limit 5000); line start from now instead
+    [W] client Bob runs v0.24, server is v0.25   Bob has an old zip cached; he is told to rejoin
+    [C1] ERROR onUpdate error x1: ...            the game side hit an error; it keeps running and counts it
+Client lines ([C<pid>], debug on) say when cars spawn, are deleted or pruned (and whether they were
+in the bubble), why each config kept or reset the lap ("same track (rev 7): lap state kept"), every
+music decision, and the screen size at the first HUD draw. The "alive" line is logged once a
+minute per player, or at once when it changes.
 
 ## Debug: read it slowly
 The console scrolls too fast. The plugin appends every line to
     Resources/Server/kkLap/kkLap.log
 Open that in the Pterodactyl file manager, or in the console:  tail -f Resources/Server/kkLap/kkLap.log
-With `/lap debug on`, client-side lines arrive there too, tagged [KKLAP][C<pid>],
+With `lap debug on` (console), client-side lines arrive there too, tagged [KKLAP][C<pid>],
 so one file tells the whole story. Game side, if ever needed: grep KKLAP beamng.log
 
 ## Rule learned the hard way
@@ -102,7 +163,7 @@ server and client, so `kkLap:cfg` becomes event `kkLap` with data `cfg...` and i
 Names here are `kkLap_cfg`, `kkLap_cross`, and so on.
 
 ## Music (v0.11, v0.14 loops, v0.21 autoplay)
-v0.21: an admin's /music <name> is remembered in config as the track for everyone. Each player
+v0.21: an admin's music <name> (console: lap music <name>) is remembered in config as the track for everyone. Each player
 hears it with no command, joiners included. /music stop clears it.
 v0.22: it starts as soon as the player's game gets the config, on joining, before they have a
 car (v0.21 waited for a car and missed the first one, so it only began after a Ctrl+R). If the
@@ -147,7 +208,7 @@ Wheels are on: FL=GRASS,...". It also records which way the car was pointing, an
 laid ACROSS the road from that, lineWidth metres wide.
 Two looks: "paint" (default) creates a real road decal with the game's chequered start-line
 material. UNCHECKED on every map: if it shows as an orange warning texture the material is not
-on that map, type /lap line draw. "draw" is a flat black-and-white chequer, 2 cm high, drawn
+on that map, type lap line draw in the console. "draw" is a flat black-and-white chequer, 2 cm high, drawn
 every frame with the same tools as the spheres. Neither changes grip or the AI map.
 Research for this (sources, confidence per call) is in STATE.md and the bench covers the
 surface read in the car's own VM.
@@ -158,7 +219,7 @@ have no room. Top centre of each game window: the countdown digits, GO and WRONG
 letters, and under them up to 4 recent small lines: "timing started" and the race-start lines
 from the server ("Darren ready (1 of 2 ...)", "race start in 5", "jumped the start", "honked
 twice"). Lines fade out by themselves. It does not take clicks or the mouse.
-Admin: /hud off turns it off for everyone, /hud on back.
+Admin (console): lap hud off turns it off for everyone, lap hud on back.
 
 ## The race timer (v0.23)
 Like the single-player time trials, right under the HUD text, top centre, no UI app needed:
@@ -194,7 +255,7 @@ same GO carry the same race number in the chat line, so they compare together (v
 At GO every car still inside the bubble starts its lap from the same server instant, so the
 times compare. A car that was on the line and leaves the bubble before GO gets
 "<name> jumped the start" in chat for all to see. Cars arriving later just cross the line as
-usual. /lap race does the same countdown without a honk.
+usual. lap race (console) does the same countdown without a honk.
 How the horn is heard: a tiny vehicle-side file (lua/vehicle/extensions/kkLap/kkLapVE.lua)
 is loaded into every car when it spawns, the same way BeamMP loads its own; it watches
 electrics.values.horn and calls kkLap.onHorn(id) on the game side once per press.
