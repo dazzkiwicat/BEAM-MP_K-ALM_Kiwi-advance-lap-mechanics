@@ -637,9 +637,9 @@ models one tidy client that never dies and always has a car. Rules that came out
    right as the default; "honk twice to go without them" is the governor, not a loophole.
 
 Working method that held up:
-- Brief file in the scratchpad, Opus builds from it, bench + check_lua + zip run after, I review
+- Brief file in the scratchpad, a builder agent builds from it, bench + check_lua + zip run after, I review
   the diff stat and the bench totals, then push. Deciding thread stays small. (Darren, 30/10:
-  "get opus to do these tasks, be token friendly".)
+  "get the builder agent to do these tasks, be token friendly".)
 - Every API fact labelled: CONFIRMED (seen live or in the stock/BeamMP source in the scratchpad
   ref/ and research/dl/ folders) or UNCHECKED. Live confirmations from Darren are the only thing
   that clears an UNCHECKED; a clean bench run never does.
