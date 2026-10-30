@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-30 by Claude. Current version: **0.25** (server main.lua and client zip share it; 0.21 is what the live server runs). Branch: claude/blissful-mccarthy-eg6jed
+Updated: 2026-10-30 (evening) by Claude. Current version: **0.26** (server main.lua and client zip share it; 0.21 is what the live server runs, 0.25 was never uploaded). Branch: claude/festive-ritchie-7slk5q
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -24,17 +24,19 @@ so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
 v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. v0.25 (admin commands from the server console only; self-explaining logs, lap status, lap report) bench 244, NOT yet live. 
-## Next move (30/10, read this and go)
-1. Darren uploads v0.25: `Resources/Server/kkLap/main.lua` and `Resources/Client/kkLap_v0.25.zip`
-   (delete kkLap_v0.21.zip), restart. Check: console prints `kkLap v0.25 loaded on Linux`.
-2. In the panel console: `lap status` (proves onConsoleInput reaches us, UNCHECKED until then),
-   then `lap rules add Honk twice to start without the rest` (the live config.json still has the old 5 lines).
-3. Live tests, cheapest first: music before the first car; HUD countdown and big timer in a narrow
-   window; two cars, second Ctrl+R's away, first honks -> countdown; second won't honk, first honks
-   twice -> countdown; a `/set` in chat is refused (console only).
+## Next move (30/10 evening, read this and go)
+1. Darren uploads v0.26: `Resources/Server/kkLap/main.lua` and `Resources/Client/kkLap_v0.26.zip`
+   (delete the old zip on the server), restart. Check: console prints `kkLap v0.26 loaded on Linux`.
+2. The start rule changed (Darren, 30/10): drive into the bubble = clock held at **0:00.000**; honk = countdown
+   and three lights; GO; the **first car out of the bubble starts the clock for everyone in that race**. Lap 2 on
+   is the drive-through. Nothing else starts a clock, the server refuses it. Test that live, one car first.
+3. Then: the sector line under the clock after cp2 (`S1  31.4 s   142 km/h`, gap beside it, split under);
+   the three lights (if they show as three "O" letters the draw-list calls were wrong, the log says so);
+   two cars, one slow off the line: its lap must include the delay.
 4. Anything odd: `lap report` in the console, upload report.txt here, grep it, never paste it.
-5. Open question for Darren (review finding 14): on Ctrl+R a driver's lap count and best start
-   over (runs keyed pid:vid). Carry over, or leave as is? Recommendation: carry over.
+5. v0.27 (parked, Darren wants the server to hold the authority): "client is a sensor". The client reports every
+   sphere enter/leave with speed and velocity; the server owns nextCp, every crossing and the wrong-way call.
+   v0.26 already moved GO, first-out, jump start and honk acceptance to the server's bubble roster.
 Owner docs: SERVER_OWNER.md (install, updates, console, what to send) and leaderboard/README.md
 (four-step Caddy setup, read-only). Both pushed; the leaderboard is UNCHECKED on a real host.
 Skipped on purpose: CONTRIBUTING/issues/releases (Darren 30/10).
@@ -595,6 +597,28 @@ Skipped on purpose: CONTRIBUTING/issues/releases (Darren 30/10).
   the onUpdate pcall wrapper with the real game's extension loader (M.onUpdate is now a closure).
   NEXT: upload main.lua + kkLap_v0.25.zip (delete kkLap_v0.24.zip), restart, in the Console tab type
   `lap help`, then `lap status`; in chat /set should say "server console only".
+
+- 30/10 (evening): v0.26, the start rule and the HUD. Bench 285 (was 244). Darren, in order: "the timer
+  starts when enter bubble, no, it should start at zero"; "doesn't show stage time or speed, u missing all the
+  cool info"; "3 lights to go"; "honk only"; "honk to start countdown, then drive out of bubble to start timer,
+  first one out starts timer"; several races in a row; "the trigger for timer ONLY occurs when countdown has
+  been activated via honk"; "the server needs as much authority as poss".
+  Server: startLap() is the one place lapStart gets a time (the bench greps for it). raceStart[race.no] per race.
+  GO (onTick) names the starters from the bubble roster itself, makes pendingGo runs, sends "GO start". onBubble
+  leave: jump start if a ready car leaves during the countdown (server-judged now, kkLap_jump gone); first leave
+  of a race = raceOut: that instant becomes lapStart for every pendingGo run of that race, "timing started" pushed
+  to each. The refused-GO line start, the point-to-point entry start and the bare cp1 "timing started" are gone:
+  all answer "at the line" (rate-limited "no lap running" log). onArm accepts only cars in the roster.
+  Client: start bubble = waiting area. Entry sends the restart cross, exit sends nothing (one flash "no timing:
+  honk in the start bubble to race", not while the lights show). kkLap_bubble carries kph. Dead state removed:
+  counting, s.armed, s.jumpSent, the go cross in onGo, c.gap (now c.info.gap). Timer window: 0:00.000 + hint
+  while at the line / after GO; after a checkpoint `S1  31.4 s   142 km/h` with the gap red/green beside it
+  (im.SameLine) for 5 s, split under it, `best m:ss.mmm   lap N`. Three lights in the HUD window: dark until
+  3 to go, red one by one, green 2 s at GO, cancel clears them.
+  UNCHECKED live (imgui names from memory, each in its own pcall, text fallback, never hud.broken): SameLine,
+  GetWindowDrawList, GetCursorScreenPos, ImDrawList_AddCircleFilled, GetColorU322, Dummy.
+  Bench needs `pip install --user lupa luaparser` on a fresh machine (builder found neither installed).
+  NEXT: upload main.lua + kkLap_v0.26.zip, restart, one car: in, 0:00.000, honk, lights, GO, out -> clock runs.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

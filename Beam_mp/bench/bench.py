@@ -145,6 +145,8 @@ C.globals().jsonDecode = lambda s: py_to_lua(C, json.loads(s))
 # with no arguments: a lone "%s" throws, "%%" prints "%"); failText makes every text call throw
 # (an error between Begin and End); srcId makes createSource hand out a source id whose object
 # lookup then fails (the leak); every deleteSource id is recorded.
+# v0.26: SameLine is recorded as a drawn entry 'sameline'; the lights' draw-list path records each
+# filled circle as 'circle r,g,b'; noDrawList makes GetWindowDrawList throw to prove the text fallback.
 C.execute("""
 scenetree = { findObjectById = function(id) return nil end }
 Engine = { Audio = { fail = 0, plays = {}, srcId = nil, deleted = {},
@@ -156,7 +158,7 @@ Engine = { Audio = { fail = 0, plays = {}, srcId = nil, deleted = {},
     end } }
 local drawn = {}
 local function pf(t) if ui_imgui.failText then error('stub: text call failed') end; return string.format(t) end
-ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil, failText = false,   -- colours[i] = 'r,g,b' of drawn[i] (TextColored)
+ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil, failText = false, noDrawList = false,   -- colours[i] = 'r,g,b' of drawn[i] (TextColored)
     Cond_Always = 1, Cond_FirstUseEver = 4,
     WindowFlags_NoTitleBar = 1, WindowFlags_NoResize = 2, WindowFlags_NoMove = 4, WindowFlags_NoBackground = 128,
     WindowFlags_NoInputs = 512, WindowFlags_NoFocusOnAppearing = 4096,
@@ -177,6 +179,11 @@ ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil, failText =
         ui_imgui.colours[#drawn] = string.format('%.2f,%.2f,%.2f', c[1], c[2], c[3])
     end,
     TextWrapped = function(t) table.insert(drawn, 'w ' .. pf(t)) end, Separator = function() end, Button = function() return false end,
+    SameLine = function() table.insert(drawn, 'sameline') end, Dummy = function() end,
+    GetWindowDrawList = function() if ui_imgui.noDrawList then error('stub: no draw list') end; return {} end,
+    GetCursorScreenPos = function() return { x = 0, y = 0 } end,
+    GetColorU322 = function(c) return c end,
+    ImDrawList_AddCircleFilled = function(dl, centre, r, col, segs) table.insert(drawn, string.format('circle %.2f,%.2f,%.2f', col[1], col[2], col[3])) end,
 }
 """)
 AUDIO = C.globals().Engine["Audio"]
@@ -230,6 +237,30 @@ def texts(f): return [d for d, _ in f] if f else []
 def gap_line(ms):                                                              # what the timer should draw for a deltaMs
     return ("x2 " + ("+" if ms > 0 else "-") + "%.2f" % (abs(ms) / 1000), "1.00,0.35,0.35" if ms > 0 else "0.35,1.00,0.35")
 RUN = re.compile(r"^x3 \d+:\d\d\.\d{3}$")                                     # running clock, big
+def is_gap(d): return re.match(r"^x2 [+-]\d", d) is not None                        # a gap line (v0.26: the sector line is x2 too)
+VER = re.search(r"M\.VERSION\s*=\s*'([^']+)'", CLIENT.read_text()).group(1)        # the version under test
+def go_events(): return [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_go"]
+def crosses(since, vid): return [json.loads(d) for n, d in events_to_server[since:] if n == "kkLap_cross" and json.loads(d).get("vid") == vid]
+def infos(since, vid): return [json.loads(d)["msg"] for p, n, d in events_to_client[since:] if n == "kkLap_info" and json.loads(d).get("vid") == vid]
+def said(since, text, pid=None): return [m for p, m in chat_out[since:] if text in m and (pid is None or p == pid)]
+def race_start(vids, cp1=(0, 0, 0)):
+    """v0.26 standing start, honk only: park vids in the start bubble, wait out the server's 10 s honk-ignore
+    window after the last GO, every car honks, the countdown runs to GO. Nobody's clock runs yet: the
+    first of them to drive out of the bubble starts the clock of the whole race. Returns the GO clock (ms)."""
+    saved = {v: velocities.get(v, (27.78, 0.0, 0.0)) for v in vids}
+    for i, v in enumerate(vids):
+        positions[v] = (cp1[0] + 2 * i, cp1[1], cp1[2]); velocities[v] = (0.0, 0.0, 0.0)
+    g = go_events()
+    while g and clock_ms[0] - g[-1]["t"] < 10100: tick()
+    for _ in range(3): tick()
+    for v in vids: M.onHorn(v)
+    n0 = len(g)
+    for _ in range(1400):
+        tick()
+        if len(go_events()) > n0: break
+    if len(go_events()) <= n0: check(False, "(setup) race_start: no GO after the honks of %s" % (vids,))
+    for v in vids: velocities[v] = saved[v]
+    return go_events()[-1]["t"]
 
 failures = []
 def check(cond, what):
@@ -311,18 +342,19 @@ check(any("checkpoint 2 marked" in m for _, m in chat_out), "chat confirms the m
 velocities[100] = (27.78, 0.0, 0.0)              # 100 km/h along x, so every crossing reports it
 positions[100] = (50, 0, 0); tick()              # start between the two spheres, outside both
 before = len(laps())
-drive(100, [(0, 0, 0)])                          # enter cp1: timing starts
-t_start = clock_ms[0]
-drive(100, [(50, 0, 0), (100, 0, 0)])            # leave, enter cp2 (split)
-drive(100, [(50, 0, 0)] * 48)                    # cruise ~4.8 s so the lap clears minLapMs
-drive(100, [(0, 0, 0)])                          # enter cp1 again: lap
+drive(100, [(0, 0, 0)])                          # into the start bubble: at the line, clock at zero (v0.26)
+race_start([100])                                # honk -> countdown -> GO: still zero
+drive(100, [(50, 0, 0)]); t_start = clock_ms[0]  # the first (only) car out: the clock starts now
+drive(100, [(100, 0, 0)])                        # enter cp2 (split)
+drive(100, [(50, 0, 0)] * 49)                    # cruise ~4.9 s so the lap clears minLapMs
+drive(100, [(0, 0, 0)])                          # enter cp1 again: lap (and the next one starts at once, drive-through)
 expected = clock_ms[0] - t_start
 got = laps()
 check(len(got) == before + 1, "one lap event after crossing cp1 -> cp2 -> cp1")
 if got:
     lap = got[-1]
     check(lap["vid"] == 100 and lap["lapMs"] == (expected if not SABOTAGE else -1),
-          "lap time equals server clock between the two cp1 crossings (%d ms)" % expected)
+          "lap time equals server clock from driving out of the bubble to the line (%d ms)" % expected)
     check(lap["name"] == "Darren" and lap["laps"] == 1, "lap carries player name and lap count")
     check(sum(lap["sectors"]) == lap["lapMs"], "sector times add up to the lap time")
     check(lap["kph"] == 100, "lap event carries entry speed (100 km/h from 27.78 m/s)")
@@ -335,7 +367,7 @@ t_lap1 = timer_frames[-1][0]
 nxt = [f for t, f in timer_frames if t <= t_lap1]
 check(any(f and RUN.match(texts(f)[0]) for f in nxt[-40:]) and not any(f and "x1 best" in " ".join(texts(f)) for f in nxt),
       "timer window showed the running clock big during lap 1, and no best line before a lap was set")
-check(not any(f and any(d.startswith("x2 ") for d in texts(f)) for f in nxt), "first split (no reference yet) shows no gap line")
+check(not any(f and any(is_gap(d) for d in texts(f)) for f in nxt), "first split (no reference yet) shows no gap line")
 check("TIMING STARTED" in flashes, "timing started flashed")
 check(realtime[0] == "", "the Race Realtime Display app clock stays empty while the imgui timer runs (never two clocks)")
 check(any(pid == -1 and "Darren  lap 1" in m for pid, m in chat_out), "lap announced to everyone in chat")
@@ -354,8 +386,8 @@ check(lap2.get("deltaMs") == lap2["lapMs"] - 5100, "lap 2 carries the delta to t
 splits = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_split"]
 check(splits[0].get("deltaMs") is None and splits[1].get("deltaMs") is not None, "first sector has no delta, the second time through it does")
 after1 = [f for t, f in timer_frames if t > t_lap1]
-check(after1 and texts(after1[0])[0] == "x3 LAP  0:05.100" and texts(after1[0])[-1] == "x1 best 0:05.100",
-      "after lap 1 the timer window shows 'LAP  0:05.100' big and the best line appears")
+check(after1 and texts(after1[0])[0] == "x3 LAP  0:05.100" and texts(after1[0])[-1] == "x1 best 0:05.100   lap 1",
+      "after lap 1 the timer window shows 'LAP  0:05.100' big and the best line with the lap count appears")
 g = gap_line(splits[1]["deltaMs"])
 check(any(f and g in f for f in after1), "the lap-2 sector gap is in the timer window with the server's sign and colour (%s)" % (g,))
 check(not any(t.startswith("S1") or "lap 2" in t for t in toasts), "no toast for lap 2 or its sector either")
@@ -393,15 +425,17 @@ check(M.cpStyle(2, st(nextCp=1, started=False, flashCp=None, flashT=0), 2) == "t
 
 # ------------------------------------------------------------------ scenario 2c: back into the start bubble mid-lap = fresh start, always
 # vid 100 has just crossed the line (nextCp 2). It wanders off and comes back to the start without cp2.
-mark_s = len(server_log); mark_c = len(client_log)
+mark_s = len(server_log); mark_c = len(client_log); mark_e = len(events_to_client)
 drive(100, [(50, 0, 0), (0, 0, 0)])
-t_restart = clock_ms[0]
-check(any("partial lap dropped, restart" in l for l in client_log[mark_c:]) and any("restart pid=1" in l for l in server_log[mark_s:]),
-      "driving back into the start bubble mid-lap restarts the lap on both sides")
+check(any("partial lap dropped" in l for l in client_log[mark_c:]) and any("at the line pid=1 vid=100 (partial lap dropped)" in l for l in server_log[mark_s:])
+      and infos(mark_e, 100) == ["at the line"],
+      "driving back into the start bubble mid-lap drops the partial lap on both sides: at the line, clock at zero (v0.26)")
 before = len(laps())
-drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+race_start([100])                                              # honk to go again
+drive(100, [(50, 0, 0)]); t_restart = clock_ms[0]              # out: the clock starts
+drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
 got = laps()[before:]
-check(len(got) == 1 and got[0]["lapMs"] == clock_ms[0] - t_restart, "the lap after a restart is timed from the restart, not from the first crossing")
+check(len(got) == 1 and got[0]["lapMs"] == clock_ms[0] - t_restart, "the lap after a restart is timed from driving out after the new GO, not from the first crossing")
 # honk works from that state too (mid-lap, back in the bubble)
 for _ in range(200): tick()
 mark = len(chat_out); positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0.0); tick(); M.onHorn(100)
@@ -410,8 +444,9 @@ for _ in range(130): tick()
 velocities[100] = (27.78, 0.0, 0.0)
 
 # ------------------------------------------------------------------ scenario 2d: crossing the start backwards is ignored
-mark_c = len(client_log); mark_e = len(events_to_client)
-positions[100] = (50, 0, 0); tick()
+mark_c = len(client_log)
+positions[100] = (50, 0, 0); tick()                            # out after the GO above: its clock starts here (v0.26)
+mark_e = len(events_to_client)
 velocities[100] = (-27.78, 0.0, 0.0)                           # driving back along -x into the start (heading was +x)
 drive(100, [(0, 0, 0)])
 check(any("backwards, ignored" in l for l in client_log[mark_c:]), "entering the start against its heading says WRONG WAY and sends nothing")
@@ -422,15 +457,18 @@ velocities[100] = (27.78, 0.0, 0.0); positions[100] = (50, 0, 0); tick()
 # vid 101 jumps sphere to sphere with NO frame outside in between. That is the case
 # the first bench run caught: the inside flag leaked across checkpoints.
 positions[100] = (50, 0, 0)
-drive(101, [(0, 0, 0)]); drive(101, [(100, 0, 0)]); drive(101, [(50, 0, 0)] * 70); drive(101, [(0, 0, 0)])
+drive(101, [(0, 0, 0)]); race_start([101])                     # at the line, honk, GO (car 100 is outside the bubble: 101 honks alone)
+drive(101, [(100, 0, 0)]); drive(101, [(50, 0, 0)] * 70); drive(101, [(0, 0, 0)])   # out and into cp2 in ONE frame, cruise, lap
 got = laps()
 check(got[-1]["vid"] == 101 and got[-1]["laps"] == 1, "vid 101 gets its own lap count (split-screen for free)")
 
 # ------------------------------------------------------------------ scenario 4: too-short lap is rejected
+positions[101] = (500, 500, 0)                   # 101 ended its lap in the start bubble: out of the way, or the honk below waits on it (v0.26)
 chat("/lap reset")                               # server state AND client state back to cp1
 positions[100] = (50, 0, 0); tick()
+drive(100, [(0, 0, 0)]); race_start([100])                     # at the line, honk, GO (v0.26)
 n = len(laps()); mark = len(server_log)
-drive(100, [(0, 0, 0), (50, 0, 0), (100, 0, 0), (50, 0, 0), (0, 0, 0)])   # full lap in 400 ms
+drive(100, [(50, 0, 0), (100, 0, 0), (50, 0, 0), (0, 0, 0)])   # out (the clock starts), cp2, the line: a full lap in 300 ms
 check(len(laps()) == n, "lap under minLapMs is rejected")
 check(any("lap rejected" in l for l in server_log[mark:]), "server log says why it was rejected")
 
@@ -438,7 +476,7 @@ check(any("lap rejected" in l for l in server_log[mark:]), "server log says why 
 chat("/lap clear")
 mark = len(client_log)
 drive(100, [(50, 0, 0), (0, 0, 0)])
-check(not any("entered cp" in l for l in client_log[mark:]), "after /lap clear the client reports no crossings")
+check(not any("entered cp" in l or "at the line" in l for l in client_log[mark:]), "after /lap clear the client reports no crossings and no bubble")
 check(any("[KKLAP][C1]" in l for l in server_log), "client debug lines reach the server log with the [C<pid>] tag")
 check((work / "Resources/Server/kkLap/kkLap.log").exists(), "kkLap.log file is written")
 check(not dropped, "no client event was dropped by the server for an unknown name (first: %s)" % (dropped[:1] or "-"))
@@ -449,10 +487,17 @@ positions[100] = (100, 0, 0); chat("/lap mark 10"); M.onSurface(100, True, "FL=A
 chat("/lap reset")
 positions[100] = (0, 0, 0); positions[101] = (2, 0, 0)        # both parked in the start bubble
 velocities[100] = (0.0, 0.0, 0.0); velocities[101] = (0.0, 0.0, 0.0)
+for _ in range(220): tick()                                   # the server ignores honks for 10 s after a GO (scenario 4 had one)
+chat("/lap reset"); mark_e = len(events_to_client)
+positions[100] = (0, 0, 0); positions[101] = (2, 0, 0)
 mark_chat = len(chat_out); mark_cl = len(client_log)
 for _ in range(10): tick()
+check(infos(mark_e, 100) == ["at the line"] and infos(mark_e, 101) == ["at the line"],
+      "v0.26: two cars parked in the start bubble are at the line, nothing started")
+check(timer_frames[-1][1] is not None and texts(timer_frames[-1][1]) == ["x3 0:00.000", "x1 in the start bubble: honk to race"],
+      "v0.26: the timer window shows 0:00.000 and the honk hint while parked (%s)" % texts(timer_frames[-1][1]))
 M.onHorn(100)                                                 # vehicle Lua reports the horn; car 100 is on the line
-check(any("honked on the line" in l for l in client_log[mark_cl:]), "a honk inside the start bubble asks for a countdown")
+check(any("honked" in l and "countdown" in l for l in client_log[mark_cl:]), "a honk is sent to the server, which decides from its bubble roster")
 check(any(pid == -1 and "ready  (1 of 2 in the start bubble" in m for pid, m in chat_out[mark_chat:]), "with two cars in the bubble one honk is not enough: 1 of 2 ready")
 check(any(n == "kkLap_hud" for (_, n, _) in events_to_client) and any(t.startswith("Darren ready  (1 of 2") and not big for t, big in hud_items()),
       "the 'ready 1 of 2' line reaches the on-screen HUD (kkLap_hud event lands in the queue)")
@@ -481,28 +526,42 @@ for _ in range(100): tick()                                   # 5 s more: every 
 check(not any(t in ("5", "4", "3", "2", "1", "GO!") for t, _ in hud_items()), "HUD items expire after their ttl (%s)" % hud_items())
 check(sum(1 for pid, m in chat_out[mark_chat:] if pid == -1 and "race start in" in m) == 1, "no second countdown from cars still parked after GO")
 velocities[100] = (27.78, 0.0, 0.0); velocities[101] = (27.78, 0.0, 0.0)
-before = len(laps())
-drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 40 + [(0, 0, 0)])     # vid 100 lap
+# v0.26 (Darren: "first one out starts timer"): nobody's clock runs at GO. Both windows hold 0:00.000 with the GO hint
+seat0_vid[0] = 101; tick(); f101 = timer_frames[-1][1]; seat0_vid[0] = 100; tick(); f100 = timer_frames[-1][1]
+check(f100 and f101 and texts(f100) == ["x3 0:00.000", "x1 GO - drive out, the first car out starts the clock"] and texts(f101) == texts(f100),
+      "v0.26: between GO and the first car out both timer windows hold 0:00.000 with the GO hint (%s)" % texts(f100))
+before = len(laps()); E0 = len(events_to_client); ms = len(server_log)
+positions[100] = (50, 0, 0); tick(); t1 = clock_ms[0]          # car A drives out: the race clock starts for A AND B, now
+first_out = [l for l in server_log[ms:] if re.search(r"race \d+ clock started by Darren#100 leaving the bubble at 100 km/h", l)]
+check(infos(E0, 100) == ["timing started"] and infos(E0, 101) == ["timing started"] and len(first_out) == 1,
+      "v0.26: the first car out starts the clock: timing started goes to both cars at once, logged with the race number and speed (%s)" % first_out)
+for _ in range(13): tick()
+positions[101] = (50, 0, 0); tick(); t_b = clock_ms[0]         # car B drives out 700 ms later: nothing new, its clock already runs
+check(t_b - t1 == 700 and infos(E0, 101) == ["timing started"] and len(first_out) == 1, "v0.26: the second car out gets no second start")
+drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])     # vid 100 lap
 t100 = clock_ms[0]
-drive(101, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 10 + [(0, 0, 0)])     # vid 101 lap, slower
+drive(101, [(100, 0, 0)] + [(50, 0, 0)] * 10 + [(0, 0, 0)])     # vid 101 lap, slower (and 700 ms late off the line)
 t101 = clock_ms[0]
 got = laps()[before:]
 check(len(got) == 2, "both cars finish a lap after the GO start")
 if len(got) == 2:
-    check(got[0]["vid"] == 100 and got[0]["lapMs"] == t100 - t_go, "vid 100 lap counted from the GO instant, not from its crossing")
-    check(got[1]["vid"] == 101 and got[1]["lapMs"] == t101 - t_go, "vid 101 lap counted from the same GO instant")
+    check(got[0]["vid"] == 100 and got[0]["lapMs"] == t100 - t1, "vid 100 lap counted from the instant the first car drove out, not from GO or its own crossing")
+    check(got[1]["vid"] == 101 and got[1]["lapMs"] == t101 - t1 and got[1]["lapMs"] == (t101 - t_b) + 700, "vid 101 lap counted from the same instant: its 700 ms late start is in its lap time")
 race_tags = [re.search(r"race (\d+)$", m).group(1) for pid, m in chat_out[mark_chat:] if pid == -1 and "  lap " in m and re.search(r"race (\d+)$", m)]
 check(len(race_tags) == 2 and race_tags[0] == race_tags[1], "both laps carry the same race number so they compare together (%s)" % race_tags)
 # jump start: park, arm, drive off during the countdown
 for _ in range(200): tick()                                   # 10 s cooldown after GO
 chat("/lap reset"); positions[100] = (0, 0, 0); positions[101] = (300, 300, 0); velocities[100] = (0.0, 0.0, 0.0)
 for _ in range(10): tick(); M.onHorn(100)                      # honk: countdown starts
-mark_chat = len(chat_out)
+mark_chat = len(chat_out); mark_f = len(flashes); X0 = len(events_to_server)
 for _ in range(10): tick()
 velocities[100] = (10.0, 0.0, 0.0); positions[100] = (20, 0, 0)   # drives off the line mid-countdown
 for _ in range(5): tick()
 check(any(pid == -1 and "jumped the start" in m for pid, m in chat_out[mark_chat:]), "driving off during the countdown is announced as a jump start")
 check(any("jumped the start" in t for t, _ in hud_items()), "the jump start reaches the HUD too")
+check(not any(n == "kkLap_jump" for n, _ in events_to_server) and any(n == "kkLap_bubble" and '"inside": false' in d and '"kph"' in d for n, d in events_to_server[X0:])
+      and not any(f.startswith("no timing") for f in flashes[mark_f:]),
+      "v0.26: the server judged the jump from the bubble leave event (with the speed); the client sent no jump report and showed no 'no timing' hint")
 for _ in range(120): tick()                                   # let that countdown finish
 
 # ------------------------------------------------------------------ scenario 9: /lap start moves the line, /lap finish makes it point-to-point
@@ -518,14 +577,18 @@ cfg = json.load(open(cfgfile))
 check(cfg.get("finish", {}).get("x") == 200 and cfg["finish"].get("hx") == 1.0, "finish line stored with its heading")
 check(any("finish line painted" in l or "finish line drawn" in l for l in client_log), "client builds a line for the finish too")
 velocities[100] = (27.78, 0.0, 0.0); positions[100] = (50, 0, 0); tick()
-before = len(laps())
-drive(100, [(5, 0, 0)]); t_s = clock_ms[0]                     # start: timing starts
-drive(100, [(50, 0, 0), (100, 0, 0)] + [(150, 0, 0)] * 55)     # cp2 split, cruise past minLapMs
+before = len(laps()); E0 = len(events_to_client)
+drive(100, [(5, 0, 0)])                                        # into the start bubble: at the line (v0.26: drag-race shape, honk to go)
+race_start([100], cp1=(5, 0, 0))
+drive(100, [(50, 0, 0)]); t_s = clock_ms[0]                    # out: the run starts
+check(infos(E0, 100) == ["at the line", "GO start", "timing started"], "point-to-point: at the line, GO, the clock starts when the car drives out (%s)" % infos(E0, 100))
+drive(100, [(100, 0, 0)] + [(150, 0, 0)] * 55)                 # cp2 split, cruise past minLapMs
 drive(100, [(200, 0, 0)]); t_f = clock_ms[0]                   # finish: run ends
 got = laps()[before:]
-check(len(got) == 1 and got[0]["lapMs"] == t_f - t_s, "point-to-point run timed from the start line to the finish line")
-drive(100, [(150, 0, 0), (50, 0, 0), (5, 0, 0)])               # back through the start: starts again, no lap
-check(len(laps()) == before + 1, "crossing the start after a finish starts a new run, counts nothing")
+check(len(got) == 1 and got[0]["lapMs"] == t_f - t_s, "point-to-point run timed from driving out of the start to the finish line")
+E1 = len(events_to_client)
+drive(100, [(150, 0, 0), (50, 0, 0), (5, 0, 0)])               # back into the start bubble: at the line again, no lap, no clock
+check(len(laps()) == before + 1 and infos(E1, 100) == ["at the line"], "back in the start after a finish: at the line, counts nothing, nothing starts without a honk")
 chat("/lap finish same")
 cfg = json.load(open(cfgfile))
 check(cfg.get("finish") is None, "/lap finish same puts the finish back on the start line")
@@ -720,9 +783,10 @@ chat("/lap reset")
 for _ in range(5): tick()
 check(all(f is None for _, f in timer_frames[-5:]), "timer: no window while no own car is timing")
 hud_seen.clear(); mark_t = len(toasts); mark_f = len(flashes)
-positions[100] = (5, 0, 0); tick(); t0 = clock_ms[0]          # into the start: timing started
-positions[100] = (50, 0, 0)
-for _ in range(20): tick()
+positions[100] = (5, 0, 0); tick()                            # into the start bubble: at the line (0:00.000, checked in the v0.26 scenario)
+race_start([100], cp1=(5, 0, 0))                              # honk, countdown, GO
+positions[100] = (50, 0, 0); tick(); t0 = clock_ms[0]         # out: the clock starts
+for _ in range(19): tick()
 fr = tframes(t0, clock_ms[0])
 check(fr and all(f and RUN.match(texts(f)[0]) and len(f) == 1 for f in fr), "timer: running clock big, alone, from the frame after timing starts")
 # lap A: first sector 1 s, no reference yet after /lap reset: no gap line at all
@@ -730,7 +794,7 @@ positions[100] = (100, 0, 0); tick(); t_sp = clock_ms[0]
 spA = json.loads([d for (p, n, d) in events_to_client if n == "kkLap_split"][-1])
 positions[100] = (50, 0, 0)
 for _ in range(100): tick()
-check(spA.get("deltaMs") is None and not any(f and any(d.startswith("x2 ") for d in texts(f)) for f in tframes(t_sp, clock_ms[0])),
+check(spA.get("deltaMs") is None and not any(f and any(is_gap(d) for d in texts(f)) for f in tframes(t_sp, clock_ms[0])),
       "timer: first lap after /lap reset has no reference, so no gap line")
 check(not any(f and any(d.startswith("x1 best") for d in texts(f)) for f in tframes(t0, clock_ms[0])), "timer: no best line before a lap is set")
 positions[100] = (5, 0, 0); tick(); t_lap = clock_ms[0]          # lap A
@@ -746,8 +810,18 @@ check(lp["vid"] == 100 and hold and all(f and texts(f)[0] == "x3 LAP  " + fmt(lp
 check(back and all(f and RUN.match(texts(f)[0]) for f in back), "timer: then the running clock is back")
 check(spB.get("deltaMs") is not None and spB["deltaMs"] < 0 and all(f and gap_line(spB["deltaMs"]) in f for f in tframes(t_sp2, t_sp2 + 2800)),
       "timer: a faster sector shows green with a minus (%s)" % (gap_line(spB["deltaMs"]) if spB.get("deltaMs") is not None else None,))
-check(all(f and texts(f)[-1] == "x1 best " + fmt(lp["bestMs"]) for f in tframes(t_lap, clock_ms[0])),
-      "timer: the small best line appears once a lap is set and stays")
+check(all(f and texts(f)[-1] == "x1 best " + fmt(lp["bestMs"]) + "   lap 1" for f in tframes(t_lap, clock_ms[0])),
+      "timer: the small best line appears once a lap is set and stays, with the lap count (v0.26)")
+# v0.26 (Darren: "it doesn't show stage time or speed, u missing all the cool info now"): sector line, gap beside it, split under it
+sec_a = "x2 S2  %.1f s   100 km/h" % (lp["sectors"][-1] / 1000)
+fr_a = tframes(t_lap, t_sp2)                                  # until lap B's first split replaces the info line
+check(fr_a and all(f and texts(f)[1] == sec_a for f in fr_a), "v0.26: after a lap the info line shows the last sector and the speed over the line (%s)" % sec_a)
+sec_b = "x2 S1  %.1f s   100 km/h" % (spB["sectorMs"] / 1000)
+fr_b = tframes(t_sp2, t_sp2 + 2800)
+check(fr_b and all(f and texts(f)[1:5] == [sec_b, "sameline", gap_line(spB["deltaMs"])[0], "x1 split " + fmt(spB["splitMs"])] for f in fr_b),
+      "v0.26: after a split the timer window shows '%s', the gap on the same line (SameLine) and 'split m:ss.mmm' under it" % sec_b)
+fr_b2 = tframes(t_sp2 + 3100, t_sp2 + 4800)
+check(fr_b2 and all(f and sec_b in texts(f) and not any(is_gap(d) for d in texts(f)) for f in fr_b2), "v0.26: the sector line stays 5 s, the gap only 3 s")
 # lap C: a slow first sector again: red plus, 3 s, then gone
 positions[100] = (5, 0, 0); tick(); lpB = laps()[-1]
 positions[100] = (50, 0, 0)
@@ -760,15 +834,16 @@ if spC.get("deltaMs") is not None and spC["deltaMs"] > 0:
     g = gap_line(spC["deltaMs"])
     on, off = tframes(t_sp3, t_sp3 + 2800), tframes(t_sp3 + 3100, clock_ms[0])
     check(on and all(f and g in f for f in on), "timer: a slower sector shows red with a plus for 3 s %s" % (g,))
-    check(off and all(f and not any(d.startswith("x2 ") for d in texts(f)) for f in off), "timer: then the gap line is gone")
+    check(off and all(f and not any(is_gap(d) for d in texts(f)) for f in off), "timer: then the gap line is gone")
 else:
     check(False, "timer: lap C sector should be slower than lap B's (%s)" % spC.get("deltaMs"))
-check(lpB["laps"] == 2 and texts(timer_frames[-1][1])[-1] == "x1 best " + fmt(lpB["bestMs"]), "timer: best line follows the server's best for this car")
+check(lpB["laps"] == 2 and texts(timer_frames[-1][1])[-1] == "x1 best " + fmt(lpB["bestMs"]) + "   lap 2", "timer: best line follows the server's best and lap count for this car")
 check(not any(t.startswith("S1") or "lap " in t for t in toasts[mark_t:]) and not any(f.startswith("S1") or f.startswith("LAP") for f in flashes[mark_f:])
       and not any(t.startswith("S1") or t.startswith("LAP") or "last sector" in t for t in hud_seen),
       "timer: no toast, flash or HUD-queue item for splits or laps (%s)" % sorted(hud_seen))
 # two own cars timing: the window follows the car the camera is on (be:getPlayerVehicle(0))
-positions[101] = (50, 0, 0); tick(); positions[101] = (5, 0, 0); tick(); positions[101] = (50, 0, 0); tick()
+positions[101] = (50, 0, 0); tick(); positions[101] = (5, 0, 0); tick()      # 101 into the bubble: at the line
+race_start([101], cp1=(5, 0, 0)); positions[101] = (50, 0, 0); tick()      # honk, GO, out: its clock runs (v0.26)
 seat0_vid[0] = 101; tick()
 f101 = timer_frames[-1][1]
 seat0_vid[0] = 100; tick()
@@ -796,9 +871,12 @@ check(realtime[0] == "" and any("lap timer path: imgui window" in l for l in cli
 # /hud off: the window goes, the old path takes over
 chat("/hud off"); chat("/lap reset")                       # a config resend clears the client state; reset the server side too
 check(any("on-screen HUD false" in m for _, m in chat_out[-3:]), "/hud off accepted")
-positions[100] = (5, 0, 0); tick(); positions[100] = (50, 0, 0)
+positions[100] = (5, 0, 0)
+for _ in range(3): tick()
+check(realtime[0] == "0:00.000", "timer fallback: at the line the UI app shows 0:00.000 (v0.26) (%s)" % realtime[0])
+race_start([100], cp1=(5, 0, 0)); positions[100] = (50, 0, 0)
 for _ in range(10): tick()
-check(all(f is None for _, f in timer_frames[-10:]) and re.match(r"^\d+:\d\d\.\d{3}$", realtime[0] or ""),
+check(all(f is None for _, f in timer_frames[-10:]) and re.match(r"^\d+:\d\d\.\d{3}$", realtime[0] or "") and realtime[0] != "0:00.000",
       "timer: /hud off hides the window and the running clock goes to the UI app instead")
 chat("/hud on")
 for _ in range(3): tick()
@@ -824,9 +902,6 @@ def fresh_track(points, own=(100,), park=(-30, 0, 0)):
         positions[100] = p; chat("/lap mark"); M.onSurface(100, True, "FL=ASPHALT")
     positions[100] = park
     for _ in range(3): tick()
-def crosses(since, vid): return [json.loads(d) for n, d in events_to_server[since:] if n == "kkLap_cross" and json.loads(d).get("vid") == vid]
-def infos(since, vid): return [json.loads(d)["msg"] for p, n, d in events_to_client[since:] if n == "kkLap_info" and json.loads(d).get("vid") == vid]
-def said(since, text, pid=None): return [m for p, m in chat_out[since:] if text in m and (pid is None or p == pid)]
 def board(): return json.load(open("Resources/Server/kkLap/times.json"))
 
 # ---- 1: a config push mid-lap (/hud on) must not cost the lap (cfg.trackRev)
@@ -835,7 +910,8 @@ def s_v24_1():
     positions[101] = (2, 0, 0); velocities[101] = (0.0, 0.0, 0.0)   # a second car parked in the start bubble
     for _ in range(3): tick()
     L0 = len(laps()); E0 = len(events_to_client)
-    drive(100, [(0, 0, 0), (50, 0, 0), (100, 0, 0), (100, 50, 0)], step_ms=1000)   # line, cp2: now heading for cp3
+    drive(100, [(0, 0, 0)], step_ms=1000); race_start([100, 101])                 # both in the bubble: honk, GO (v0.26)
+    drive(100, [(50, 0, 0), (100, 0, 0), (100, 50, 0)], step_ms=1000)            # 100 out (the clock starts for both), cp2: now heading for cp3
     rev = G.cfg["trackRev"]
     chat("/hud on")                                               # any admin command that pushes the config
     check(G.cfg["trackRev"] == rev and "1:101" in bubble_keys(), "v0.24 #1: /hud on pushes the config but keeps the track revision and the bubble roster")
@@ -855,13 +931,15 @@ def s_v24_2():
     def passline():
         for x in [-20, -6, -3, 0, 3, 6, 20]:
             positions[100] = (x, 0, 0); tick(ms=100)
-    passline()
+    positions[100] = (0, 0, 0); tick(ms=100)                     # into the one sphere: at the line (v0.26)
+    race_start([100])                                            # honk, GO; the car sits inside the target sphere
+    for x in [3, 6, 20]: positions[100] = (x, 0, 0); tick(ms=100)   # out: the clock starts
     for _ in range(10): positions[100] = (200, 0, 0); tick(ms=1000)
     positions[100] = (-30, 0, 0); tick(ms=1000)
-    passline()
-    c = crosses(X0, 100)
-    check(len(c) == 2, "v0.24 #2: 1-checkpoint track, two passes through it: exactly two crossings sent (%d)" % len(c))
-    check(len(laps()) == L0 + 1, "v0.24 #2: and the second pass is a lap")
+    passline()                                                   # through it again: the lap
+    c = [(x["cp"], x.get("restart")) for x in crosses(X0, 100)]
+    check(c == [(1, True), (1, None)], "v0.24 #2: 1-checkpoint track: one 'at the line' cross when the car parks in it, then exactly one crossing when it passes through again (%s)" % c)
+    check(len(laps()) == L0 + 1, "v0.24 #2: and that pass is a lap")
 guard("v0.24 #2", s_v24_2)
 
 # ---- 6: /set and /race take only sane numbers; /race stop
@@ -925,7 +1003,7 @@ guard("v0.24 #7", s_v24_7)
 # ---- 5: a teleport with no reset event where the car STAYS
 def s_v24_5():
     fresh_track([(0, 0, 0), (100, 0, 0)])
-    drive(100, [(0, 0, 0), (50, 0, 0)], step_ms=500)
+    drive(100, [(0, 0, 0)], step_ms=500); race_start([100]); drive(100, [(50, 0, 0)], step_ms=500)   # at the line, GO, out: lap running
     mark = len(chat_out)
     positions[100] = (600, 600, 0)
     for _ in range(25): tick()                                    # 1.25 s, never moves back
@@ -938,7 +1016,8 @@ guard("v0.24 #5", s_v24_5)
 def s_v24_4_3():
     fresh_track([(0, 0, 0), (100, 0, 0)])
     L0 = len(laps())
-    drive(100, [(0, 0, 0), (50, 0, 0), (100, 0, 0), (50, 50, 0), (0, 0, 0)], step_ms=2000)   # lap 1: 8 s, [4, 4], 100 km/h
+    drive(100, [(0, 0, 0)], step_ms=2000); race_start([100])                                 # at the line, honk, GO (v0.26)
+    drive(100, [(50, 0, 0), (50, 0, 0), (100, 0, 0), (50, 50, 0), (0, 0, 0)], step_ms=2000)  # out (clock starts), lap 1: 8 s, [4, 4], 100 km/h
     velocities[100] = (10.0, 0.0, 0.0)                                                    # lap 2 crosses the line at 36 km/h
     drive(100, [(50, 0, 0), (100, 0, 0), (50, 50, 0), (50, 50, 0), (50, 50, 0), (-30, 0, 0), (0, 0, 0)], step_ms=2000)   # 14 s
     got = [(l["lapMs"], l["sectors"]) for l in laps()[L0:]]
@@ -972,23 +1051,24 @@ def s_v24_12():
     check(said(mark, "race start in"), "v0.24 #12: (setup) car 101 alone in the bubble honks, countdown")
     held = []; real_go = c_handlers["kkLap_go"]
     c_handlers["kkLap_go"] = lambda d: held.append(d)            # kkLap_go still on the wire (network delay)
+    E0 = len(events_to_client)
     for _ in range(120):
         tick()
         if held: break
     c_handlers["kkLap_go"] = real_go
     for _ in range(20): tick()                                   # 1 s after the server's GO, car 100 arrives at speed
-    E0 = len(events_to_client)
     positions[100] = (0, 0, 0); tick(); t_entry = clock_ms[0]
     for d in held: real_go(d)                                    # ... and only now does the client hear GO
     i100, i101 = infos(E0, 100), infos(E0, 101)
-    check(held and i101 == ["GO start"], "v0.24 #12: the car parked in the bubble at GO still gets the GO start (%s)" % i101)
-    check(i100 and i100[-1] == "timing started" and "GO start" not in i100, "v0.24 #12: the car that arrived after GO gets a line start, not GO (%s)" % i100)
-    L0 = len(laps()); mark = len(chat_out)
+    check(held and i101 == ["GO start"], "v0.24 #12: the car parked in the bubble at GO is named a starter by the server, GO heard late or not (%s)" % i101)
+    check(i100 == ["at the line"], "v0.26: the car that arrived after GO is not a starter: at the line, no GO start, no timing (%s)" % i100)
+    L0 = len(laps()); X0 = len(events_to_server)
     drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
-    got = laps()[L0:]
-    line = said(mark, "Darren  lap", -1)
-    check(len(got) == 1 and got[0]["lapMs"] == clock_ms[0] - t_entry and line and "race" not in line[-1],
-          "v0.24 #12: its lap is timed from its own crossing (%s ms) and carries no race number" % (got[0]["lapMs"] if got else None))
+    check(len(laps()) == L0 and infos(E0, 100) == ["at the line", "at the line"] and all(x.get("restart") for x in crosses(X0, 100)),
+          "v0.26: its drive round without a honk is no lap: no crossing sent but the 'at the line' one, back at the line (%s)" % infos(E0, 100))
+    E1 = len(events_to_client)
+    velocities[101] = (27.78, 0.0, 0.0); positions[101] = (50, 0, 0); tick()
+    check(infos(E1, 101) == ["timing started"] and infos(E1, 100) == [], "v0.26: the starter driving out starts its own race clock only")
 guard("v0.24 #12", s_v24_12)
 
 # ---- 9: leaving the level stops the music for good (no autoplay retry 3 s later)
@@ -1051,7 +1131,7 @@ def s_v24_13():
     C.globals().ui_imgui["failText"] = False; HUD["broken"] = False; rs.open = False
     # the timer window had this since v0.23: still holds
     fresh_track([(0, 0, 0), (100, 0, 0)])
-    drive(100, [(0, 0, 0), (50, 0, 0)])
+    drive(100, [(0, 0, 0)])                                      # at the line: the timer window shows 0:00.000 (v0.26)
     for _ in range(120): tick()
     C.globals().ui_imgui["failText"] = True
     m0 = len(DRAWN); tick()
@@ -1130,18 +1210,17 @@ def s_v25_logs():
     mark = len(server_log)
     G.onCross(1, json.dumps({"vid": 555, "cp": 2}))
     check(any("cross refused Darren#555: got cp 2, wanted cp 1" in l for l in server_log[mark:]), "v0.25 c: a wrong checkpoint logs got cp and wanted cp")
-    G.onCross(1, json.dumps({"vid": 555, "cp": 1})); clock_ms[0] += 300
-    G.onCross(1, json.dumps({"vid": 555, "cp": 2})); clock_ms[0] += 300
-    G.onCross(1, json.dumps({"vid": 555, "cp": 1}))
-    check(any("lap rejected, too short: Darren#555 600 ms < minLapMs 5000" in l for l in server_log[mark:]), "v0.25 c: a too-short lap logs its ms against minLapMs")
-    G.onInvalid(1, json.dumps({"vid": 555, "reason": "bench teleport 40 m"})); clock_ms[0] += 3000
-    G.onCross(1, json.dumps({"vid": 555, "cp": 2})); clock_ms[0] += 3000
-    G.onCross(1, json.dumps({"vid": 555, "cp": 1}))
-    check(any("LAP NOT COUNTED Darren#555 0:06.000 (invalidated: bench teleport 40 m)" in l for l in server_log[mark:])
+    drive(100, [(100, 0, 0), (0, 0, 0)], step_ms=300)               # car 100's lap runs (101 drove out): cp2 and the line in 600 ms
+    check(any("lap rejected, too short: Darren#100 600 ms < minLapMs 5000" in l for l in server_log[mark:]), "v0.25 c: a too-short lap logs its ms against minLapMs")
+    G.onInvalid(1, json.dumps({"vid": 100, "reason": "bench teleport 40 m"})); clock_ms[0] += 3000
+    G.onCross(1, json.dumps({"vid": 100, "cp": 2})); clock_ms[0] += 3000
+    G.onCross(1, json.dumps({"vid": 100, "cp": 1}))
+    check(any("LAP NOT COUNTED Darren#100 0:06.000 (invalidated: bench teleport 40 m)" in l for l in server_log[mark:])
           and "NOT COUNTED  0:06.000  (bench teleport 40 m)" in pathlib.Path("Resources/Server/kkLap/laps.log").read_text(),
           "v0.25 c: a lap not counted logs and writes to laps.log the reason it was invalidated")
-    G.onCross(1, json.dumps({"vid": 556, "cp": 1, "go": True}))
-    check(any("GO cross refused Darren#556: GO was" in l and "(limit 5000)" in l for l in server_log[mark:]), "v0.25 c: a refused GO start says which condition failed, with the numbers")
+    G.onCross(1, json.dumps({"vid": 556, "cp": 1, "go": True}))     # a stale client's GO cross (v0.25): just a line cross with no lap running
+    check(any("cross Darren#556 with no lap running: no timing without a honk countdown" in l for l in server_log[mark:]),
+          "v0.26 e: a line cross with no lap running starts nothing and says why")
     # g: one file to upload
     r = console("lap report")
     rp = pathlib.Path("Resources/Server/kkLap/report.txt")
@@ -1152,10 +1231,10 @@ def s_v25_logs():
     check(not any("[KKLAP][W] client" in l for l in server_log), "v0.25 d: the bench client (same version) gets no version warning")
     mark = len(server_log); mc = len(chat_out)
     G.onAck(1, json.dumps({"v": "0.20"})); G.onAck(1, json.dumps({"v": "0.20"})); G.onClientDbg(1, "extension v0.20 loaded, markers available")
-    w = [l for l in server_log[mark:] if "[KKLAP][W] client Darren runs v0.20, server is v0.25" in l]
-    told = [m for p, m in chat_out[mc:] if p == 1 and "kkLap: your client mod is v0.20, server is v0.25, rejoin to re-download" in m]
+    w = [l for l in server_log[mark:] if "[KKLAP][W] client Darren runs v0.20, server is v%s" % VER in l]
+    told = [m for p, m in chat_out[mc:] if p == 1 and "kkLap: your client mod is v0.20, server is v%s, rejoin to re-download" % VER in m]
     check(len(w) == 1 and len(told) == 1, "v0.25 d: a client on another version: one [W] line and one chat line to that player (%d, %d)" % (len(w), len(told)))
-    G.onAck(1, json.dumps({"v": "0.25"}))
+    G.onAck(1, json.dumps({"v": VER}))
     # e: the alive relay, once a minute per client unless it changes
     sent0 = sum(1 for n, d in events_to_server if n == "kkLap_dbg" and d.startswith("alive"))
     mark = len(server_log)
@@ -1165,7 +1244,7 @@ def s_v25_logs():
     check(sent >= 12 and 1 <= len(logged) <= 2, "v0.25 e: alive sent %d times in 65 s, logged %d (once a minute)" % (sent, len(logged)))
     mark = len(server_log); mc = len(client_log); own_vids[:] = [100]
     for _ in range(110): tick()
-    check(any("[KKLAP][C1] alive, own vehicles: 100 (v0.25)" in l for l in server_log[mark:]), "v0.25 e: an alive line that says something new is logged at once")
+    check(any("[KKLAP][C1] alive, own vehicles: 100 (v%s)" % VER in l for l in server_log[mark:]), "v0.25 e: an alive line that says something new is logged at once")
     check(any("vehicle 101 pruned (no longer ours, was in bubble: no)" in l for l in client_log[mc:]), "v0.25 h: a pruned car is logged with whether it was in the bubble")
     # k: an error inside onUpdate is caught, counted, relayed once; the extension keeps running
     real = C.globals().MPVehicleGE["getOwnMap"]
@@ -1221,6 +1300,168 @@ def s_v25_console():
           and any("position from Darren (asked from the console): checkpoint %d marked" % (n0 + 1) in l for l in server_log[ms:]),
           "v0.25: lap mark Darren 12 marks at Darren's car with r 12; the result goes to Darren and to the console log")
 guard("v0.25 console", s_v25_console)
+
+# ================================================================== v0.26 (Darren, 30/10): the start bubble is a waiting area, honk only
+# "the timer starts when enter bubble, no, it should start at zero"; "make sure the trigger for timer ONLY occurs when
+# countdown has been activated via honk"; "honk to start countdown, then drive out of bubble to start timer, first one
+# out starts timer"; "if someone else comes in after, it can run another race"; "3 lights to go". The server runs the
+# whole start sequence from its bubble roster (enter/leave with speed, honk); the client senses and draws.
+console("lap adminchat on")                                  # the scenario above left it off: fresh_track() marks through chat
+DARK, RED, GREEN = "0.25,0.25,0.25", "1.00,0.15,0.15", "0.20,1.00,0.20"
+def frame_items():
+    """one tick; what the imgui stub drew during it, as (text, colour)"""
+    m0 = len(DRAWN); tick()
+    return [(DRAWN[i], COLOURS[i]) for i in range(m0 + 1, len(DRAWN) + 1)]
+def circles(items): return [d[7:] for d, c in items if d.startswith("circle ")]
+def hud_lines(items):
+    """the entries drawn inside the ##kkLapHud window of one frame"""
+    out, on = [], False
+    for d, c in items:
+        if d.startswith("begin "): on = (d == "begin ##kkLapHud"); continue
+        if d == "end": on = False; continue
+        if on: out.append((d, c))
+    return out
+
+def s_v26_bubble():
+    fresh_track([(0, 0, 0), (100, 0, 0)])                        # car 100 parked at (-30,0,0), 100 km/h along x
+    # (a) a fresh car drives into the start bubble: at the line, clock at zero, nothing starts
+    E0 = len(events_to_client); X0 = len(events_to_server); mf = len(flashes)
+    positions[100] = (0, 0, 0); tick(); t_in = clock_ms[0]
+    c = crosses(X0, 100)
+    check(infos(E0, 100) == ["at the line"] and len(c) == 1 and c[0].get("restart") is True and c[0]["cp"] == 1 and round(c[0]["kph"]) == 100,
+          "v0.26 a: a fresh car driving into the start bubble: one 'at the line' cross, the server answers at the line, no timing started")
+    for _ in range(40): tick()                                    # sits 2 s in the bubble
+    fr = tframes(t_in, clock_ms[0])
+    check(fr and all(f and texts(f) == ["x3 0:00.000", "x1 in the start bubble: honk to race"] and f[0][1] == "1.00,1.00,1.00" for f in fr),
+          "v0.26 a: the timer window shows 0:00.000 big in white with the honk hint, and the clock stays at zero for the 2 s it sits there")
+    check(not any("timing started" in m for m in infos(E0, 100)) and "TIMING STARTED" not in flashes[mf:], "v0.26 a: nothing started the clock")
+    # (b) drives out without honking: nothing starts, the window hides; cp2 is not a split; back in = at the line again
+    E1 = len(events_to_client); X1 = len(events_to_server); mf = len(flashes); L0 = len(laps())
+    positions[100] = (50, 0, 0); tick()
+    check(flashes[mf:] == ["no timing: honk in the start bubble to race"], "v0.26 b: driving out with no honk flashes the hint once (%s)" % flashes[mf:])
+    for _ in range(10): tick()
+    check(all(f is None for _, f in timer_frames[-10:]) and M.timerVid() is None, "v0.26 b: no own car timing: the timer window is gone")
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 5)
+    check(infos(E1, 100) == [] and crosses(X1, 100) == [] and not any(n == "kkLap_split" for p, n, d in events_to_client[E1:])
+          and flashes[mf:] == ["no timing: honk in the start bubble to race"],
+          "v0.26 b: through cp2 with no lap: no cross sent, no split, no timing started, the hint only once")
+    positions[100] = (0, 0, 0); tick()
+    check(infos(E1, 100) == ["at the line"] and len(laps()) == L0, "v0.26 b: back into the bubble: at the line again, no lap")
+    # (e) a full drive round with no honk; and the server refuses a bare line cross with no lap running
+    E2 = len(events_to_client)
+    drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+    check(len(laps()) == L0 and not any("timing started" in m for m in infos(E0, 100)), "v0.26 e: a fresh car in, out, round the track and back in: zero laps, zero timing started")
+    ms = len(server_log); G.onCross(1, json.dumps({"vid": 100, "cp": 1}))   # a bare line cross with no lap running (a stale client)
+    check(any("cross Darren#100 with no lap running: no timing without a honk countdown" in l for l in server_log[ms:]) and infos(E2, 100)[-1] == "at the line",
+          "v0.26 e: the server refuses a line cross with no lap running: logged, answered at the line")
+    # (f) honk, countdown, GO, out: timing started; lap 1 and lap 2 by drive-through, no further honk
+    E3 = len(events_to_client); L0 = len(laps()); ms = len(server_log)
+    race_start([100]); Xh = len(events_to_server)
+    positions[100] = (50, 0, 0); tick(); t1 = clock_ms[0]
+    check(infos(E3, 100) == ["GO start", "timing started"] and any(re.search(r"race \d+ clock started by Darren#100 leaving the bubble at 100 km/h", l) for l in server_log[ms:]),
+          "v0.26 f: honk, countdown, GO, drive out: timing started at the exit, logged as the first car out (%s)" % infos(E3, 100))
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)]); tA = clock_ms[0]
+    drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)]); tB = clock_ms[0]
+    got = laps()[L0:]
+    check(len(got) == 2 and got[0]["lapMs"] == tA - t1 and got[1]["lapMs"] == tB - tA and not any(n == "kkLap_arm" for n, _ in events_to_server[Xh:]),
+          "v0.26 f: lap 1 from the exit, lap 2 from the line (drive-through), no further honk (%s)" % [l["lapMs"] for l in got])
+    # (c) back into the bubble mid-lap: at the line, 0:00.000 held, honk to go again
+    E4 = len(events_to_client); ms = len(server_log)
+    positions[100] = (50, 0, 0); tick(); positions[100] = (0, 0, 0); tick(); t_back = clock_ms[0]
+    check(infos(E4, 100) == ["at the line"] and any("at the line pid=1 vid=100 (partial lap dropped)" in l for l in server_log[ms:]),
+          "v0.26 c: back into the bubble mid-lap: at the line, the partial lap dropped (the server dbg line says so)")
+    for _ in range(10): tick()
+    fr = tframes(t_back, clock_ms[0])
+    check(fr and all(f and texts(f)[0] == "x3 0:00.000" and texts(f)[1] == "x1 in the start bubble: honk to race" and texts(f)[-1] == "x1 best " + fmt(got[0]["bestMs"]) + "   lap 2" for f in fr),
+          "v0.26 c: the clock is held at 0:00.000 with the honk hint; the best line stays")
+    E5 = len(events_to_client)
+    race_start([100]); positions[100] = (50, 0, 0); tick()
+    check(infos(E5, 100) == ["GO start", "timing started"], "v0.26 c: honk, GO, out: timing started again (%s)" % infos(E5, 100))
+    # a honk outside the bubble: the server's roster refuses it
+    ms = len(server_log); mc = len(chat_out); M.onHorn(100)
+    check(any("arm Darren#100 refused: not in the start bubble" in l for l in server_log[ms:]) and not said(mc, "race start in"),
+          "v0.26: a honk outside the start bubble is refused by the server from its roster, no countdown")
+    # (g) the server source sets lapStart to a time in exactly one place
+    sets = [m for m in re.findall(r"\blapStart\s*=\s*([^\s,;]+)", SERVER.read_text()) if m != "nil"]
+    check(sets == ["t"], "v0.26 g: main.lua assigns lapStart a time in exactly one place, startLap (%s)" % sets)
+guard("v0.26 bubble", s_v26_bubble)
+
+def s_v26_lights():
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0.0)
+    for _ in range(3): tick()
+    LS = M.lightsState
+    check(LS["on"] == False and circles(frame_items()) == [], "v0.26 lights: none before the countdown")
+    M.onHorn(100)
+    it = frame_items()
+    check(circles(it) == [DARK, DARK, DARK] and any(d.startswith("begin ##kkLapHud") for d, _ in it), "v0.26 lights: at 5 three dark circles in the HUD window (%s)" % circles(it))
+    seen = {}
+    for _ in range(130):
+        it = frame_items(); n = flashes[-1]
+        if n in ("4", "3", "2", "1", "GO!") and circles(it): seen.setdefault(n, circles(it))
+        if n == "GO!" and len(seen) >= 5: break
+    check(seen.get("4") == [DARK] * 3 and seen.get("3") == [RED, DARK, DARK] and seen.get("2") == [RED, RED, DARK] and seen.get("1") == [RED] * 3 and seen.get("GO!") == [GREEN] * 3,
+          "v0.26 lights: 4 dark, 3 one red, 2 two red, 1 three red, GO three green (%s)" % seen)
+    for _ in range(50): tick()                                    # 2.5 s after GO
+    check(LS["on"] == False and circles(frame_items()) == [], "v0.26 lights: gone 2.5 s after GO")
+    # no draw list in the binding: three 'O' at scale 3, SameLine between, the HUD survives
+    C.globals().ui_imgui["noDrawList"] = True
+    mc = len(client_log)
+    race_start([100])                                             # waits out the 10 s window, honks: the countdown runs with text lights
+    M.onHorn(100)                                                 # (the GO just happened: ignored for 10 s) -> wait and honk again
+    for _ in range(205): tick()
+    M.onHorn(100)
+    it = frame_items(); hl = hud_lines(it)
+    os_ = [(d, c) for d, c in hl if d == "x3 O"]
+    check(circles(it) == [] and os_ == [("x3 O", DARK)] * 3 and [d for d, _ in hl].count("sameline") == 2 and not HUD["broken"]
+          and sum("lights: draw list missing, text lights" in l for l in client_log[mc:]) == 1,
+          "v0.26 lights: no draw list: three 'O' text lights at scale 3 with SameLine between, HUD not broken, said once (%s)" % hl)
+    greens = None
+    for _ in range(130):
+        it = frame_items()
+        if flashes[-1] == "GO!" and hud_lines(it): greens = [(d, c) for d, c in hud_lines(it) if d == "x3 O"]; break
+    check(greens == [("x3 O", GREEN)] * 3 and not HUD["broken"] and sum("lights: draw list missing" in l for l in client_log[mc:]) == 1,
+          "v0.26 lights: text lights go green at GO, the HUD is not broken, the fallback was logged once (%s)" % greens)
+    C.globals().ui_imgui["noDrawList"] = False; HUD["lightsMode"] = None
+    velocities[100] = (27.78, 0.0, 0.0)
+guard("v0.26 lights", s_v26_lights)
+
+def s_v26_races():
+    fresh_track([(0, 0, 0), (100, 0, 0)], own=(100, 101, 102))
+    positions[101] = (-30, 5, 0); positions[102] = (-30, 10, 0)
+    for v in (100, 101, 102): velocities[v] = (27.78, 0.0, 0.0)
+    for _ in range(3): tick()
+    E0 = len(events_to_client); ms = len(server_log)
+    race_start([100, 101])                                        # race 1: A and B honk, GO
+    race1 = int(re.search(r"GO at \d+, race (\d+)", "\n".join(server_log[ms:])).group(1))
+    positions[100] = (50, 0, 0); tick(); t1 = clock_ms[0]        # A out: the clock of this race starts for A and B
+    check(infos(E0, 100) == ["at the line", "GO start", "timing started"] and infos(E0, 101) == ["at the line", "GO start", "timing started"],
+          "v0.26 races: A out starts the clock for A and B (%s / %s)" % (infos(E0, 100), infos(E0, 101)))
+    for _ in range(13): tick()
+    positions[101] = (50, 0, 0); tick()                           # B out 700 ms later
+    E1 = len(events_to_client); ms = len(server_log)
+    race_start([102])                                             # C arrives after the 10 s window, honks alone: race 2
+    race2 = int(re.search(r"GO at \d+, race (\d+)", "\n".join(server_log[ms:])).group(1))
+    check(race2 == race1 + 1 and infos(E1, 102) == ["at the line", "GO start"] and infos(E1, 100) == [] and infos(E1, 101) == [],
+          "v0.26 races: a late car honks alone: its own GO, race %d; the cars already racing hear nothing" % race2)
+    positions[102] = (50, 0, 0); tick(); t2 = clock_ms[0]
+    check(infos(E1, 102) == ["at the line", "GO start", "timing started"] and infos(E1, 100) == [] and infos(E1, 101) == []
+          and any("race %d clock started by Darren#102 leaving the bubble" % race2 in l for l in server_log[ms:]),
+          "v0.26 races: C out starts race %d's clock, logged; A and B untouched" % race2)
+    L0 = len(laps()); mc = len(chat_out)
+    drive(100, [(100, 0, 0), (50, 0, 0), (0, 0, 0)]); tA = clock_ms[0]
+    drive(101, [(100, 0, 0), (50, 0, 0), (0, 0, 0)]); tB = clock_ms[0]
+    drive(102, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)]); tC = clock_ms[0]
+    got = laps()[L0:]
+    lines = said(mc, "  lap ", -1)
+    check(len(got) == 3 and got[0]["lapMs"] == tA - t1 and got[1]["lapMs"] == tB - t1 and got[2]["lapMs"] == tC - t2,
+          "v0.26 races: A and B timed from A's exit (B's 700 ms late start included), C from its own exit (%s)" % [l["lapMs"] for l in got])
+    check(len(lines) == 3 and lines[0].endswith("race %d" % race1) and lines[1].endswith("race %d" % race1) and lines[2].endswith("race %d" % race2),
+          "v0.26 races: the lap lines carry race %d, %d and %d (%s)" % (race1, race1, race2, [l[-10:] for l in lines]))
+    r = console("lap status")
+    check("race: active false" in r and "run Darren#102: next cp 2" in r, "v0.26 races: lap status lists the runs (%s)" % (r or "")[:80])
+guard("v0.26 races", s_v26_races)
+check(not dropped, "no client event was dropped by the server (after the v0.26 scenarios)")
 
 print()
 print("bench dir:", work)
