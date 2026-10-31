@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-30 (evening) by Claude. Current version: **0.26** (server main.lua and client zip share it; 0.21 is what the live server runs, 0.25 was never uploaded). Branch: claude/festive-ritchie-7slk5q
+Updated: 2026-10-31 by Claude. Current version: **0.27** (server main.lua and client zip share it; **0.26 is what the live server runs**, 31/10, no errors in its log). Branch: claude/festive-ritchie-7slk5q
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -24,22 +24,22 @@ so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
 v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. v0.25 (admin commands from the server console only; self-explaining logs, lap status, lap report) bench 244, NOT yet live. 
-## Next move (30/10 evening, read this and go)
-1. Darren uploads v0.26: `Resources/Server/kkLap/main.lua` and `Resources/Client/kkLap_v0.26.zip`
-   (delete the old zip on the server), restart. Check: console prints `kkLap v0.26 loaded on Linux`.
-2. The start rule changed (Darren, 30/10): drive into the bubble = clock held at **0:00.000**; honk = countdown
-   and three lights; GO; the **first car out of the bubble starts the clock for everyone in that race**. Lap 2 on
-   is the drive-through. Nothing else starts a clock, the server refuses it. Test that live, one car first.
-3. Then: the sector line under the clock after cp2 (`S1  31.4 s   142 km/h`, gap beside it, split under);
-   the three lights (if they show as three "O" letters the draw-list calls were wrong, the log says so);
-   two cars, one slow off the line: its lap must include the delay.
-4. Anything odd: `lap report` in the console, upload report.txt here, grep it, never paste it.
-5. v0.27 (parked, Darren wants the server to hold the authority): "client is a sensor". The client reports every
-   sphere enter/leave with speed and velocity; the server owns nextCp, every crossing and the wrong-way call.
-   v0.26 already moved GO, first-out, jump start and honk acceptance to the server's bubble roster.
-Owner docs: SERVER_OWNER.md (install, updates, console, what to send) and leaderboard/README.md
-(four-step Caddy setup, read-only). Both pushed; the leaderboard is UNCHECKED on a real host.
-Skipped on purpose: CONTRIBUTING/issues/releases (Darren 30/10).
+## Next move (31/10, read this and go)
+1. Darren uploads v0.27: `Resources/Server/kkLap/main.lua`, `Resources/Client/kkLap_v0.27.zip` (delete the 0.26 zip)
+   AND `leaderboard/index.html` to the web host (new columns: Car, Standing, Rolling). Restart. Check: console
+   prints `kkLap v0.27 loaded on Linux`. Leaderboard is live at https://beamtimes.aimbot.co.nz (Darren, 31/10).
+2. First chat line, as photon_dazz: `/admin add me` (locks admin control to the account key id:775254; until then
+   everyone can change settings, v0.19 rule). Admin commands work in chat AND console again. Kill switch for a
+   hostile client: console `lap adminchat off` (chat cannot flip it).
+3. Live tests, cheapest first: a car parked 40 m from the start sees NO countdown, lights or clock when someone
+   else races; the clock is amber with a black shadow (log says "HUD shadow: cursor calls missing" if the shadow
+   failed); sit 31 s after a checkpoint -> TIMED OUT, clock gone; standing lap + rolling lap -> RUN COMPLETE, clock
+   stops, third pass through the line does nothing; the board shows Car / Standing / Rolling; `/set timeoutS 45`
+   and `/set maxLaps 3` from chat.
+4. The car name: the log line "vid N is <Brand Name> (key)". If it shows only the key (etk800), core_vehicles
+   .getModel is not what I remembered: send the line and I will fix the lookup.
+5. Anything odd: `lap report` in the console, upload report.txt here, grep it, never paste it.
+6. Parked: "client is a sensor" (server owns nextCp and every crossing, judges wrong-way from a velocity vector).
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
@@ -619,6 +619,29 @@ Skipped on purpose: CONTRIBUTING/issues/releases (Darren 30/10).
   GetWindowDrawList, GetCursorScreenPos, ImDrawList_AddCircleFilled, GetColorU322, Dummy.
   Bench needs `pip install --user lupa luaparser` on a fresh machine (builder found neither installed).
   NEXT: upload main.lua + kkLap_v0.26.zip, restart, one car: in, 0:00.000, honk, lights, GO, out -> clock runs.
+
+- 31/10: v0.27 after the first evening with three drivers on v0.26 (laps.log 31/10 16:49-17:18, races to 24,
+  28 first-out clock starts, 0 errors in 22,247 log lines; lights drew by the draw-list path, no fallback line).
+  Darren's list: countdown and clock shown to everyone even in menus; clock runs on after a lap; "?" names on the
+  board; only the 2nd lap counted; car make/model; a run is 2 laps then stop; admin commands back in chat with the
+  console kill switch kept; timeout as a setting; white clock blends into the sky. Bench 350 (was 285).
+  Server: racePids() = bubble roster + pendingGo/running runs (+ whoever typed /race): kkLap_count/go/hud and the
+  chat 3-2-1-GO go to them only, never -1. kkLap_sweep 1 s timer: a run with no checkpoint for cfg.timeoutS (30)
+  is dropped ("timed out" info, chat line, log); pendingGo runs time out 30 s after GO. cfg.maxLaps (2): the lap
+  that reaches it ends the run ("run complete", chat, log; laps reset, r.best kept for the gap). Lap type standing
+  (first-out start) / rolling (drive-through) in kkLap_lap, laps.log and the board: e.standing / e.rolling
+  sub-tables, bestStandingMs / bestRollingMs, bestMs = min (a pre-0.27 best migrates to e.legacy and stays in the
+  min). minLaps default 1. Car name from the client on bubble enter and honk, kept per run/board entry.
+  Nameless board entries: guests get the key, id: entries get "?" and one W log line. adminChat default true,
+  isAdmin matches a name or a player key (id:NNN), `/admin add me` stores the typist's key; `lap adminchat off`
+  console-only kill switch kept and bench-tested from both sides.
+  Client: engaged = own car in the start sphere, or within radius + 20 m and not racing (hysteresis), or racing;
+  not engaged = no HUD, timer, lights, toasts or flashes drawn. carName(veh) = core_vehicles.getModel(jbeam)
+  .model.Brand .. " " .. Name, pcall, cached per vid, falls back to the jbeam key. Clock amber (1.0, 0.75, 0.1),
+  2 px black drop shadow under big/medium lines (GetCursorPos/SetCursorPos, probed once, plain fallback logged).
+  leaderboard/index.html: columns Driver, Car, Best lap, Standing, Rolling, Laps, km/h, Resets, Points.
+  UNCHECKED live: core_vehicles.getModel fields; im.GetCursorPos/SetCursorPos; a permanent 1 s MP.CreateEventTimer.
+  NEXT: upload main.lua + kkLap_v0.27.zip + index.html, restart, `/admin add me`, then the list in Next move.
 
 ## First live test, in order
 1. DONE. Plugin loads on the real server.

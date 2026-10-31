@@ -24,8 +24,8 @@
 <div class="sub" id="sub">loading times.json…</div>
 <table>
   <thead><tr>
-    <th class="num">#</th><th>Driver</th><th class="num">Best lap</th><th class="num">Laps</th>
-    <th class="num">km/h at line</th><th class="num">Resets</th><th class="num">Points</th>
+    <th class="num">#</th><th>Driver</th><th>Car</th><th class="num">Best lap</th><th class="num">Standing</th><th class="num">Rolling</th>
+    <th class="num">Laps</th><th class="num">km/h at line</th><th class="num">Resets</th><th class="num">Points</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -42,12 +42,17 @@ async function load() {
   try {
     const r = await fetch('times.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const board = await r.json();                    // { "id:123": {name,bestMs,laps,kph,resets}, ... }
-    const list = Object.values(board).filter(e => e && e.bestMs > 0).sort((a, b) => a.bestMs - b.bestMs);
+    // { "id:123": {name,car,bestMs,bestStandingMs,bestRollingMs,laps,kph,resets}, ... }  (v0.27: standing + rolling)
+    // bestMs is the better of the two laps; a key with no name is a guest, and the key IS the name
+    const board = await r.json();
+    const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+    const list = Object.entries(board).filter(([k, e]) => e && e.bestMs > 0).map(([k, e]) => ({ ...e, name: e.name || k }))
+      .sort((a, b) => a.bestMs - b.bestMs);
     const top = list.length ? list[0].bestMs : 0, showPts = list.length >= POINTS_MIN_DRIVERS;
     rows.innerHTML = list.map((e, i) => `<tr class="${i === 0 ? 'top' : ''}">
-      <td class="num">${i + 1}</td><td>${String(e.name || '?').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</td>
-      <td class="num">${fmt(e.bestMs)}</td><td class="num">${e.laps || 0}</td>
+      <td class="num">${i + 1}</td><td>${esc(e.name)}</td><td>${e.car ? esc(e.car) : '-'}</td>
+      <td class="num">${fmt(e.bestMs)}</td><td class="num">${fmt(e.bestStandingMs)}</td><td class="num">${fmt(e.bestRollingMs)}</td>
+      <td class="num">${e.laps || 0}</td>
       <td class="num">${e.kph ? Math.round(e.kph) : '-'}</td><td class="num">${e.resets || 0}</td>
       <td class="num">${showPts ? Math.floor(100 * top / e.bestMs) : '-'}</td></tr>`).join('');
     sub.textContent = list.length + ' driver' + (list.length === 1 ? '' : 's') + ' · updated ' + new Date().toLocaleTimeString()

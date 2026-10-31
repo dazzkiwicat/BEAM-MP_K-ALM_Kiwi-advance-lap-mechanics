@@ -5,8 +5,9 @@
 --   * receives "I crossed checkpoint N" from clients and does the timing
 --   * broadcasts results and config changes to every client
 --   * answers /lap chat commands so options can be changed live, in game
---   * answers "lap ..." typed in the server console (Pterodactyl's Console tab): since v0.25
---     the admin commands run there only, unless cfg.adminChat is switched on
+--   * answers "lap ..." typed in the server console (Pterodactyl's Console tab) too (v0.25). Admin
+--     commands work in chat (admins, v0.19 rules) and in the console; the console's "lap adminchat
+--     off" is the kill switch that refuses every admin command from every client (v0.27)
 --
 -- Every line this plugin prints starts with [KKLAP] so one grep finds it:
 --     grep KKLAP Server.log
@@ -14,7 +15,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.26"   -- same number as the client zip it was built with
+local VERSION  = "0.27"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -57,12 +58,15 @@ local defaultCfg = {
     countdown    = 5,        -- seconds
     lineStyle    = "paint",  -- start/finish line: "paint" = real road decal, "draw" = flat chequer (v0.8.0)
     lineWidth    = 10,       -- metres across the road
-    minLaps      = 2,        -- laps a driver must complete before any lap of theirs counts for the board (v0.10)
+    minLaps      = 1,        -- laps a driver must complete in one run before their laps count for the board (v0.10; v0.27: 1, a lap counts at once)
+    maxLaps      = 2,        -- counted laps in one run, then the clock stops: standing lap + rolling lap (v0.27, Darren 31/10)
+    timeoutS     = 30,       -- no checkpoint for this many seconds = the run is dropped, the clock stops (v0.27, Darren 31/10)
     pointsMinDrivers = 3,    -- points only show once this many drivers are on the board
     djText       = "DJ set is in the Discord voice channel: ask in Discord for the invite",   -- /dj prints this (v0.13)
     admins       = {},       -- player names allowed to change anything. Empty = everyone (first /admin add locks it) (v0.19)
-    adminChat    = false,    -- false: admin commands run from the server console only ("lap ..."), refused in chat (v0.25).
-                             -- true: admins (above) may also type them in chat. Set from the console: lap adminchat on|off
+    adminChat    = true,     -- true: admins (above) may type the admin commands in game chat too (v0.27, Darren: "i obviously need
+                             -- the admin controls"). false: the kill switch against a hostile client, EVERY admin command from EVERY
+                             -- client is refused and logged; set from the server console only: lap adminchat on|off (v0.25)
     rulesOnJoin  = true,     -- open the rules window when a player joins
     rules        = {         -- shown in the in-game rules window, /rules add <text> | /rules clear
         "Park in the start bubble and honk once. Everyone in there must honk, then 5-4-3-2-1-GO.",
@@ -70,7 +74,8 @@ local defaultCfg = {
         "Arrive after GO? Your own honk starts your own countdown.",
         "Physics reset (Insert) is allowed and counted. Recover / teleport = that lap does not count.",
         "Back in the start bubble any time = fresh start, partial lap dropped.",
-        "Two laps minimum before your best goes on the board. Points once 3 drivers have times.",
+        "A run is two laps: a standing lap, then a rolling lap. Both go on the board, the best of the two is your time.",
+        "No checkpoint for 30 s = the run is dropped. Points once 3 drivers have times.",
     },
     musicAuto    = nil,      -- track every player hears from the moment they join (v0.22; v0.21 waited for a car); set by /music <name>, cleared by /music stop
     musicVolume  = 0.5,      -- /lap music <name> plays art/sound/kkLap/<name>.ogg from the zip on every client (v0.11)
@@ -154,27 +159,87 @@ local function fmt(ms)
 end
 
 local function say(pid, msg) MP.SendChatMessage(pid, "[LAP] " .. msg) end
--- race-start lines go to chat AND to every client's on-screen HUD (v0.22): in split screen
--- the chat app and the countdown app have no room, so chat alone is not enough. Only the
--- race-start lines use this; every other chat line stays chat only.
+-- race-start lines go to chat AND to the on-screen HUD (v0.22): in split screen the chat app and the
+-- countdown app have no room, so chat alone is not enough. Only the race-start lines use this.
+-- v0.27 (Darren, 31/10: "the countdown is seen by all players, even when not in race ... it gets
+-- annoying"): they go to the players IN the race only (racePids, defined with the roster below), not
+-- to everyone. A player with no car in the start bubble and no run hears nothing of a countdown.
+local racePids                      -- defined after the bubble roster and the race table
 local function sayHud(msg)
-    say(-1, msg)
-    MP.TriggerClientEventJson(-1, "kkLap_hud", { msg = msg })
+    for _, pid in ipairs(racePids()) do
+        say(pid, msg)
+        MP.TriggerClientEventJson(pid, "kkLap_hud", { msg = msg })
+    end
 end
 
 -- ---------------------------------------------------------------- events from clients
 -- data = json {vid=number, cp=number, pos={x,y,z}}
 -- ------------------------------------------------- leaderboard: best lap per player name
-local board = {}          -- [name] = { bestMs, sectors = {...}, laps = n, kph = entry speed on best }
+-- [key] = { name, laps, bestMs, sectors, kph, resets, car,    <- the better of the two below (what the web page reads)
+--           standing = { ms, sectors, kph, resets, car },      <- best lap started from the GO (v0.27)
+--           rolling  = { ms, sectors, kph, resets, car },      <- best lap started at speed over the line (v0.27)
+--           bestStandingMs, bestRollingMs,                     <- the two numbers again, for the web page columns
+--           legacy = { ms, sectors, kph, resets },             <- a pre-0.27 bestMs whose type nobody knows, kept in the race
+--           bestSectors = { ... } }                            <- best per sector, any lap, for the split deltas
+local board = {}
+local function saveBoard()
+    local f = io.open(TIMES_PATH, "w")
+    if f then f:write(Util.JsonEncode(board)); f:close() end
+end
+-- v0.27: two entries in the live times.json (laps from 27/10, before the name field existed) had no name
+-- and the web page showed "?". For a guest the key IS the name. An "id:" key with no name stays "?" (the
+-- name arrives with the driver's next lap), said once in the log. A pre-0.27 bestMs is kept as a 'legacy'
+-- lap so a slower standing or rolling lap today cannot push a driver's record up.
 local function loadBoard()
     local f = io.open(TIMES_PATH, "r")
     if not f then return end
     local ok, t = pcall(Util.JsonDecode, f:read("*a")); f:close()
-    if ok and type(t) == "table" then board = t end
+    if not (ok and type(t) == "table") then return end
+    board = t
+    local changed = false
+    for key, e in pairs(board) do
+        if type(e) == "table" then
+            if e.name == nil or e.name == "" or e.name == "?" then
+                if tostring(key):sub(1, 3) == "id:" then
+                    if e.name ~= "?" then e.name = "?"; changed = true end
+                    log("W", string.format("board: entry %s has no name yet, shown as ? until that driver laps again", tostring(key)))
+                else
+                    e.name = tostring(key); changed = true
+                    log("I", string.format("board: entry %s had no name, the key is the name (a guest)", tostring(key)))
+                end
+            end
+            if e.bestMs and not e.standing and not e.rolling and not e.legacy then
+                e.legacy = { ms = e.bestMs, sectors = e.sectors or {}, kph = e.kph or 0, resets = e.resets or 0, car = e.car }
+                changed = true
+            end
+        end
+    end
+    if changed then saveBoard() end
 end
-local function saveBoard()
-    local f = io.open(TIMES_PATH, "w")
-    if f then f:write(Util.JsonEncode(board)); f:close() end
+-- put a run's best standing and rolling laps on the board (v0.27). Each type keeps its own sectors, speed,
+-- resets and car (as v0.24 did for the one best); the top-level fields are the better of the two (or a
+-- legacy lap). Merging by minimum, so calling it again with the same laps changes nothing.
+local function copyList(list) local out = {}; for i, v in ipairs(list or {}) do out[i] = v end; return out end
+local function boardPut(bkey, name, runBests, addLaps, bestSectors)
+    local e = board[bkey] or {}
+    e.name = name
+    e.laps = (e.laps or 0) + (addLaps or 0)
+    e.bestSectors = bestSectors or e.bestSectors
+    for _, kind in ipairs({ "standing", "rolling" }) do
+        local b = runBests[kind]
+        if b and (not e[kind] or b.ms < e[kind].ms) then
+            e[kind] = { ms = b.ms, sectors = copyList(b.sectors), kph = b.kph or 0, resets = b.resets or 0, car = b.car }
+        end
+    end
+    e.bestStandingMs = e.standing and e.standing.ms or nil
+    e.bestRollingMs  = e.rolling and e.rolling.ms or nil
+    local top = nil
+    for _, kind in ipairs({ "standing", "rolling", "legacy" }) do
+        local b = e[kind]
+        if b and b.ms and (not top or b.ms < top.ms) then top = b; e.bestType = kind end
+    end
+    if top then e.bestMs = top.ms; e.sectors = copyList(top.sectors); e.kph = top.kph or 0; e.resets = top.resets or 0; e.car = top.car end
+    board[bkey] = e
 end
 local function lapRecord(line)       -- the permanent record, one line per lap
     local f = io.open(LAPS_PATH, "a")
@@ -208,15 +273,24 @@ end
 -- -> the FIRST car of that race to drive out of the bubble starts the clock for every car of that
 -- race, at that one instant. A car whose lap IS running and crosses the line starts the next lap at
 -- once (drive-through). startLap is the ONLY code that sets r.lapStart to a time (the bench greps for it).
-local function startLap(r, t, why)
+-- lapType (v0.27, Darren: "1st being standing time and rolling time"): 'standing' = the lap that starts
+-- when the first car drives out after GO, 'rolling' = a lap started at speed by crossing the line.
+local function startLap(r, t, why, lapType)
     local n = #cfg.checkpoints + (cfg.finish and 1 or 0)
     r.lapStart  = t
     r.lastCp    = t
     r.sectors   = {}
     r.resets    = 0; r.invalid = false; r.invalidWhy = nil
-    r.pendingGo = false
+    r.pendingGo = false; r.goT = nil
     r.nextCp    = (n > 1) and 2 or 1
-    dbg(string.format("lap clock started for %s#%s at %d: %s", tostring(r.name), tostring(r.vid), t, why))
+    r.lapType   = lapType or 'rolling'
+    dbg(string.format("lap clock started for %s#%s at %d (%s): %s", tostring(r.name), tostring(r.vid), t, r.lapType, why))
+end
+-- the run is over (back at the line, timed out, run complete): clock off, nothing pending, heading for
+-- the line again. The board keeps what it has; r.best (the session's best, for the gap) stays.
+local function dropRun(r)
+    r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
+    r.raceNo = nil; r.pendingGo = false; r.goT = nil; r.nextCp = 1
 end
 -- the run of one car (key pid:vid); made on first contact, its sector deltas start from the board's bests
 local function runFor(pid, vid)
@@ -235,8 +309,7 @@ end
 -- A partial lap (back into the bubble mid-lap) is dropped here: Darren's rule, 27/10.
 local function atLine(r, pid, vid, why)
     if r.lapStart or r.pendingGo then dbg(string.format("at the line pid=%d vid=%s (%s)", pid, tostring(vid), why)) end
-    r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
-    r.raceNo = nil; r.pendingGo = false; r.nextCp = 1
+    dropRun(r)
     MP.TriggerClientEventJson(pid, "kkLap_info", { vid = vid, msg = "at the line" })
 end
 -- The first GO starter of a race to drive out of the start bubble starts the clock of EVERY car of that
@@ -253,18 +326,32 @@ local function raceOut(r, who, kph, t)
     end
     for _, r2 in pairs(runs) do
         if r2.pendingGo and r2.raceNo == no then
-            startLap(r2, raceStart[no], string.format("race %d, first car out", no))
+            startLap(r2, raceStart[no], string.format("race %d, first car out", no), 'standing')
             MP.TriggerClientEventJson(r2.pid, "kkLap_info", { vid = r2.vid, msg = "timing started" })
         end
     end
 end
 
 -- ------------------------------------------------- race start: shared countdown, one GO for all
-local race = { active = false, left = 0, tGo = nil, no = 0 }
+local race = { active = false, left = 0, tGo = nil, no = 0, byPid = nil }   -- byPid: the player who typed /race, while it counts (v0.27)
 -- who is in the start bubble right now, and who has honked "ready" (v0.18, Darren's rule):
 -- the countdown starts when EVERY car in the bubble has honked. One car alone: its honk is
 -- enough. A car that arrives after GO is a new group: its own honk, its own countdown.
-bubble = {}         -- key pid:vid -> { pid, vid, name, ready, started }  (global: sendCfg above clears it)
+bubble = {}         -- key pid:vid -> { pid, vid, name, ready, started, car }  (global: sendCfg above clears it)
+-- the players who are in a race right now (v0.27): a car in the start bubble roster, or a run that is
+-- waiting for GO / running, or the admin who typed /race in chat while it counts. Countdown, GO and the
+-- race-start HUD lines go to these and nobody else. Sorted, one entry per player (split screen = one).
+racePids = function()
+    local seen, list = {}, {}
+    local function add(pid)
+        if type(pid) == "number" and pid >= 0 and not seen[pid] then seen[pid] = true; list[#list + 1] = pid end
+    end
+    for _, e in pairs(bubble) do add(e.pid) end
+    for _, r in pairs(runs) do if r.pendingGo or r.lapStart then add(r.pid) end end
+    if race.active then add(race.byPid) end
+    table.sort(list)
+    return list
+end
 local function bubbleCounts()
     local waiting, ready = 0, 0
     for _, e in pairs(bubble) do
@@ -296,7 +383,7 @@ local function roster()
     return "[" .. table.concat(parts, ", ") .. "]" .. (started > 0 and string.format(" (+%d already started)", started) or ""), waitingOn
 end
 -- true when a countdown started; false and the reason when it did not (v0.25: it used to return silently)
-local function startCountdown(who)
+local function startCountdown(who, byPid)
     if race.active then return false, string.format("a countdown is already running (%d left)", race.left) end
     if race.tGo and nowMs() - race.tGo < 10000 then       -- just started one, ignore the parked cars
         return false, string.format("GO was %.1f s ago, the start ignores honks for 10 s after a GO", (nowMs() - race.tGo) / 1000)
@@ -307,8 +394,9 @@ local function startCountdown(who)
     local left = math.floor(math.max(1, math.min(60, tonumber(cfg.countdown) or 5)))
     race.active = true
     race.left   = left
+    race.byPid  = byPid                  -- a player who typed /race hears their own countdown even outside the bubble (v0.27)
     sayHud(string.format("race start in %d  (%s)  - sit in the start bubble", race.left, who))
-    MP.TriggerClientEventJson(-1, "kkLap_count", { n = race.left })
+    for _, pid in ipairs(racePids()) do MP.TriggerClientEventJson(pid, "kkLap_count", { n = race.left }) end
     MP.CreateEventTimer("kkLap_tick", 1000)
     log("I", "countdown started by " .. who)
     return true
@@ -317,17 +405,23 @@ function onTick()
     if not race.active then MP.CancelEventTimer("kkLap_tick"); return end
     race.left = race.left - 1
     if race.left > 0 then
-        say(-1, tostring(race.left))
-        MP.TriggerClientEventJson(-1, "kkLap_count", { n = race.left })
+        -- v0.27: the digits go to the players in the race only (chat and the kkLap_count event)
+        for _, pid in ipairs(racePids()) do
+            say(pid, tostring(race.left))
+            MP.TriggerClientEventJson(pid, "kkLap_count", { n = race.left })
+        end
     else
         MP.CancelEventTimer("kkLap_tick")
-        race.active = false
+        local pids = racePids()               -- who hears GO: taken before the countdown is over (race.byPid counts while it runs)
+        race.active = false; race.byPid = nil
         race.tGo    = nowMs()                 -- the GO instant: honks are ignored for 10 s after it. The lap clock starts when the first car drives out (v0.26)
         race.no     = race.no + 1
         raceStart[race.no] = nil; raceStart[race.no - 20] = nil   -- this race has no start instant yet; races older than 20 are forgotten
         local n = #cfg.checkpoints + (cfg.finish and 1 or 0)
-        say(-1, "GO!")
-        MP.TriggerClientEventJson(-1, "kkLap_go", { t = race.tGo })
+        for _, pid in ipairs(pids) do
+            say(pid, "GO!")
+            MP.TriggerClientEventJson(pid, "kkLap_go", { t = race.tGo })
+        end
         local gone = {}
         for _, e in ipairs(bubbleList()) do             -- this group has gone; late arrivals form the next
             if not e.started then
@@ -335,8 +429,10 @@ function onTick()
                 -- v0.26: the server names the starters from its own roster; the client sends nothing at GO.
                 -- The run waits (pendingGo) with its clock at zero until the first car of this race drives out.
                 local r = runFor(e.pid, e.vid)
-                r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
+                dropRun(r)
                 r.pendingGo = true; r.raceNo = race.no; r.nextCp = (n > 1) and 2 or 1
+                r.goT = race.tGo                              -- the timeout counts from here until the first car is out (v0.27)
+                if e.car then r.car = e.car end               -- the car's make and model, from the client (v0.27)
                 MP.TriggerClientEventJson(e.pid, "kkLap_info", { vid = e.vid, msg = "GO start" })
             end
         end
@@ -363,19 +459,22 @@ function onBubble(pid, data)                   -- client: "my car entered / left
     if d.inside then
         if not bubble[key] then
             bubble[key] = { pid = pid, vid = d.vid, name = MP.GetPlayerName(pid) or ("p" .. pid), ready = false, started = false }
-            log("I", string.format("bubble +%s (now %d)", tag(bubble[key]), bubbleSize()))
+            log("I", string.format("bubble +%s (now %d)%s", tag(bubble[key]), bubbleSize(), d.car and (" in " .. tostring(d.car)) or ""))
         end
+        -- v0.27: the client names the car (make and model) on entering; the run carries it onto the board
+        if d.car then bubble[key].car = tostring(d.car); if runs[key] then runs[key].car = tostring(d.car) end end
     else
         local e = bubble[key]
-        bubble[key] = nil
         if e then
-            log("I", string.format("bubble -%s (now %d)", tag(e), bubbleSize()))
             -- v0.26: the server judges the whole start sequence from this one event.
             -- A ready (honked) car leaving while the countdown runs = jump start. Shame is the penalty.
+            -- Said while the car is still on the roster (v0.27): the jumper is in the race and hears it too.
             if race.active and e.ready and not e.started then
                 sayHud(e.name .. " jumped the start")
                 log("I", string.format("%s jumped the start (%d s left)", tag(e), race.left or 0))
             end
+            bubble[key] = nil
+            log("I", string.format("bubble -%s (now %d)", tag(e), bubbleSize()))
             -- A GO starter driving out: the clock of its race starts, for every car in it (first one out).
             -- A car that vanished (deleted, pruned: no speed in the payload) did not drive out.
             local r = runs[key]
@@ -404,6 +503,7 @@ function onArm(pid, data)                      -- client: "my car honked inside 
     end
     local wasReady = e.ready == true             -- this is its second honk (v0.22)
     e.ready = true; e.started = false
+    if d.car then e.car = tostring(d.car); if runs[key] then runs[key].car = e.car end end   -- the car's name rides on the honk too (v0.27)
     local waiting, ready = bubbleCounts()
     local list, waitingOn = roster()
     local line = string.format("arm %s: %d of %d ready %s", who, ready, waiting, list)
@@ -422,6 +522,30 @@ function onArm(pid, data)                      -- client: "my car honked inside 
     end
     log("I", line .. (started and " -> countdown" or ""))
     if not started then log("I", "no countdown: " .. why) end
+end
+
+-- ------------------------------------------------- timeout (v0.27)
+-- Darren, 31/10: "the timer runs on even after I've done a lap and then do something else ... got to avoid
+-- over hang as this is a freeroam map with other things to do as well". Once a second (kkLap_sweep, always
+-- running, cheap): a run with no checkpoint for cfg.timeoutS seconds is dropped, and so is a GO starter that
+-- never drove out of the bubble within timeoutS of the GO. The driver is told, honks in the bubble to go again.
+-- Live sectors are 3-30 s; one stuck car had a 102 s sector. 30 s is Darren's number: lap set timeoutS N.
+function onSweep()
+    local limit = math.floor((tonumber(cfg.timeoutS) or 30) * 1000)
+    if limit <= 0 then return end
+    local t = nowMs()
+    for key, r in pairs(runs) do
+        local since, what
+        if r.lapStart and r.lastCp then since, what = t - r.lastCp, "since the last checkpoint"
+        elseif r.pendingGo and r.goT then since, what = t - r.goT, "since the GO with nobody out of the bubble" end
+        if since and since > limit then
+            local who = tostring(r.name) .. "#" .. tostring(r.vid)
+            log("I", string.format("run timed out %s: %d s %s (limit %d)", who, math.floor(since / 1000), what, limit / 1000))
+            dropRun(r)
+            MP.TriggerClientEventJson(r.pid, "kkLap_info", { vid = r.vid, msg = "timed out" })
+            say(r.pid, string.format("lap timed out: %d s without a checkpoint, honk in the start bubble to go again", limit / 1000))
+        end
+    end
 end
 
 -- points: 100 for the top time, less the further off it you are. floor(100 * top / yours).
@@ -487,6 +611,7 @@ function onCross(pid, data)
                 if not r.bestSectors[idx] or sec < r.bestSectors[idx] then r.bestSectors[idx] = sec end
             end
             local lapDelta = r.best and (lap - r.best) or nil   -- vs your best before this lap (v0.20)
+            local counted  = lap >= cfg.minLapMs and not r.invalid   -- read before the flags are cleared below (v0.27: maxLaps counts these only)
             if lap < cfg.minLapMs then
                 log("I", string.format("lap rejected, too short: %s %d ms < minLapMs %d (%d sectors)", who, lap, cfg.minLapMs, #r.sectors))
             elseif r.invalid then
@@ -499,35 +624,33 @@ function onCross(pid, data)
                 r.laps = r.laps + 1
                 local name = MP.GetPlayerName(pid) or ("p" .. pid)
                 local kph  = math.floor(tonumber(d.kph) or 0)
-                if not r.best or lap < r.best then
-                    -- everything the board shows about the best lap is kept WITH it (v0.24): before, the
-                    -- board took the best time but the sectors, speed and lap count of the latest lap
-                    r.best = lap; r.bestResets = r.resets; r.bestKph = kph
-                    r.bestSectorsOfBest = {}
-                    for i, v in ipairs(r.sectors) do r.bestSectorsOfBest[i] = v end
+                local kind = r.lapType or "rolling"           -- standing (first out after GO) or rolling (v0.27)
+                if not r.car and bubble[key] then r.car = bubble[key].car end
+                if not r.best or lap < r.best then r.best = lap end   -- the session's best, any type: the gap on the next lap
+                -- the run's best lap of each type, everything the board shows kept WITH it (v0.24, per type since v0.27)
+                r.runBests = r.runBests or {}
+                local rb = r.runBests[kind]
+                if not rb or lap < rb.ms then
+                    r.runBests[kind] = { ms = lap, sectors = copyList(r.sectors), kph = kph, resets = r.resets, car = r.car }
                 end
                 MP.TriggerClientEventJson(-1, "kkLap_lap", { pid = pid, vid = d.vid, name = name, lapMs = lap, bestMs = r.best,
-                                                            laps = r.laps, sectors = r.sectors, kph = kph, resets = r.resets, deltaMs = lapDelta })
-                local line = string.format("%s  lap %d  %s  %s  best %s  @%d km/h  resets %d%s",
-                                           name, r.laps, fmt(lap), sectorsText(r.sectors), fmt(r.best), kph, r.resets,
-                                           r.raceNo and ("  race " .. r.raceNo) or "")
+                                                            laps = r.laps, sectors = r.sectors, kph = kph, resets = r.resets, deltaMs = lapDelta,
+                                                            lapType = kind, car = r.car })
+                local line = string.format("%s  lap %d  %s  %s  %s  best %s  @%d km/h  resets %d%s%s",
+                                           name, r.laps, fmt(lap), kind, sectorsText(r.sectors), fmt(r.best), kph, r.resets,
+                                           r.car and ("  in " .. r.car) or "", r.raceNo and ("  race " .. r.raceNo) or "")
                 log("I", "LAP " .. line)
                 lapRecord(line)
                 if cfg.announceLaps then say(-1, line) end
-                -- the board: only once this driver has minLaps laps in this run; then ANY of their laps can be the record
+                -- the board: only once this driver has minLaps laps in this run (1 by default since v0.27: a single
+                -- standing lap counts); then the run's best standing and best rolling lap both go on
                 if r.laps >= cfg.minLaps then
                     local bkey = playerKey(pid)
-                    local e = board[bkey]
                     -- laps on the board = counted laps: the first time this run qualifies, all of its laps so far
                     local add = (r.laps == cfg.minLaps) and r.laps or 1
                     local bs = {}
                     for i, v in pairs(r.bestSectors) do bs[i] = v end
-                    if not e or r.best < e.bestMs then
-                        board[bkey] = { name = name, bestMs = r.best, sectors = r.bestSectorsOfBest or {}, laps = (e and e.laps or 0) + add,
-                                        kph = r.bestKph or 0, resets = r.bestResets or 0, bestSectors = bs }
-                    else
-                        e.laps = (e.laps or 0) + add; e.name = name; e.bestSectors = bs
-                    end
+                    boardPut(bkey, name, r.runBests, add, bs)
                     saveBoard()
                 else
                     log("I", string.format("board: %s has %d of %d laps this run, not on the board yet", who, r.laps, cfg.minLaps))
@@ -535,10 +658,20 @@ function onCross(pid, data)
                 end
             end
             r.resets = 0; r.invalid = false; r.invalidWhy = nil
+            local maxLaps = math.floor(tonumber(cfg.maxLaps) or 2)
             if cfg.finish then
-                r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.nextCp = 1   -- course done: back into the start bubble, honk to go again
+                dropRun(r)                                  -- course done: back into the start bubble, honk to go again
+            elseif counted and r.laps >= maxLaps then
+                -- v0.27 (Darren, 31/10: "once person has done [the] laps the timer stops and it says must proceed back
+                -- to start line"): a run is maxLaps counted laps (2: standing + rolling). The clock stops here; the
+                -- next run starts from the bubble with a honk. Laps not counted (too short, invalidated) do not add up.
+                log("I", string.format("run complete %s: %d laps, back to the start line", who, r.laps))
+                r.laps = 0; r.runBests = nil
+                dropRun(r)
+                MP.TriggerClientEventJson(pid, "kkLap_info", { vid = d.vid, msg = "run complete" })
+                say(pid, "run complete: back to the start line and honk to go again")
             else
-                startLap(r, t, "drive-through: the next lap starts at once")
+                startLap(r, t, "drive-through: the next lap starts at once", "rolling")
             end
         else
             -- the line (or the finish) crossed with no lap running: nothing starts. The clock only ever
@@ -674,11 +807,14 @@ end
 -- there unless cfg.adminChat is on. Console (Pterodactyl's Console tab, the BeamMP server console):
 -- "lap mark Darren", answered as onConsoleInput's return value, which the console prints.
 local CONSOLE = -2        -- the console's "player id": a sentinel, never a real player
+-- v0.19 rules: an empty list = everyone (bootstrap), the first /admin add locks it. v0.27: an entry may be a
+-- player name OR a player key ("id:775254", what playerKey gives a BeamMP account), so the lock is on the
+-- account, not on a display name that can change. /admin add me stores the typist's own key.
 local function isAdmin(pid)
     if pid == CONSOLE then return true end          -- whoever has the server console owns the server
     if #cfg.admins == 0 then return true end        -- nobody set yet: open (bootstrap)
-    local name = MP.GetPlayerName(pid) or ""
-    for _, a in ipairs(cfg.admins) do if a == name then return true end end
+    local key, name = playerKey(pid)
+    for _, a in ipairs(cfg.admins) do if a == name or a == key then return true end end
     return false
 end
 local ADMIN_ONLY = { mark = true, start = true, finish = true, clear = true, undo = true, reset = true, debug = true,
@@ -701,7 +837,7 @@ local ADMIN_HELP = {      -- chat spelling, shown only while adminChat is on
     "/race [sec] | /race stop | /reset | /autostart on|off | /announce on|off | /markers on|off",
     "/line paint|draw | /music <file> [vol] [once] | /music stop | /dj <text> | /hud on|off",
     "/rules add <text> | /rules clear | /admin add|remove <name> | /admin list | /status | /report",
-    "/set minLapMs | defaultRadius | markerAlpha | lineWidth | countdown | minLaps | pointsMinDrivers | musicVolume",
+    "/set minLapMs | defaultRadius | markerAlpha | lineWidth | countdown | minLaps | maxLaps | timeoutS | pointsMinDrivers | musicVolume",
 }
 local CONSOLE_HELP = {    -- console spelling: "lap" first ("/lap" and "kklap" work too)
     "kkLap v" .. VERSION .. " admin commands, typed here in the server console:",
@@ -710,7 +846,7 @@ local CONSOLE_HELP = {    -- console spelling: "lap" first ("/lap" and "kklap" w
     "  lap race [sec] | lap race stop | lap autostart on|off | lap announce on|off | lap markers on|off",
     "  lap line paint|draw | lap music <file> [vol] [once] | lap music stop | lap dj [text] | lap hud on|off | lap debug on|off",
     "  lap rules | lap rules add <text> | lap rules clear | lap admin add|remove <name> | lap admin list",
-    "  lap set minLapMs|defaultRadius|markerAlpha|lineWidth|countdown|minLaps|pointsMinDrivers|musicVolume <n>",
+    "  lap set minLapMs|defaultRadius|markerAlpha|lineWidth|countdown|minLaps|maxLaps|timeoutS|pointsMinDrivers|musicVolume <n>",
     "  lap times | lap status (what the plugin sees now) | lap report (writes report.txt to upload)",
     "  lap adminchat on|off   admins may type these in game chat too (off = console only)",
 }
@@ -725,6 +861,8 @@ local SET_KEYS = {
     minLaps          = { 1, 100, integer = true },
     pointsMinDrivers = { 1, 100, integer = true },
     musicVolume      = { 0, 10 },
+    maxLaps          = { 1, 100, integer = true },     -- counted laps per run, then the clock stops (v0.27)
+    timeoutS         = { 5, 600, integer = true },     -- seconds without a checkpoint before the run is dropped (v0.27)
 }
 -- on|off commands: no argument SHOWS the value (v0.24; before, a bare /markers switched them off)
 local function onOff(reply, pfx, args, key, label, push)
@@ -789,8 +927,8 @@ local function statusLines()
             ago(r.lapStart), r.laps or 0, r.best and fmt(r.best) or "-", tostring(r.invalid == true),
             r.invalidWhy and (" (" .. r.invalidWhy .. ")") or "", (r.raceNo and (", race " .. r.raceNo) or "") .. (r.pendingGo and ", GO start: waiting for the first car out" or ""))
     end
-    L[#L + 1] = string.format("cfg: countdown %s, minLaps %s, minLapMs %s, autoStart %s, musicAuto %s, hud %s, adminChat %s, debug %s, trackRev %s, admins %s",
-        tostring(cfg.countdown), tostring(cfg.minLaps), tostring(cfg.minLapMs), tostring(cfg.autoStart), tostring(cfg.musicAuto), tostring(cfg.hud),
+    L[#L + 1] = string.format("cfg: countdown %s, minLaps %s, maxLaps %s, timeoutS %s, minLapMs %s, autoStart %s, musicAuto %s, hud %s, adminChat %s, debug %s, trackRev %s, admins %s",
+        tostring(cfg.countdown), tostring(cfg.minLaps), tostring(cfg.maxLaps), tostring(cfg.timeoutS), tostring(cfg.minLapMs), tostring(cfg.autoStart), tostring(cfg.musicAuto), tostring(cfg.hud),
         tostring(cfg.adminChat == true), tostring(cfg.debug), tostring(cfg.trackRev), #cfg.admins > 0 and table.concat(cfg.admins, ", ") or "none (everyone)")
     return L
 end
@@ -821,8 +959,9 @@ local function writeReport()
     f:write("== config (as running)\n", json(cfg), "\n\n")
     f:write("== board (times.json)\n")
     for i, it in ipairs(sortedBoard()) do
-        f:write(string.format("%d. %s  %s  %s  laps %d  @%d km/h  resets %d\n", i, it.name, fmt(it.e.bestMs), sectorsText(it.e.sectors or {}),
-                              it.e.laps or 0, it.e.kph or 0, it.e.resets or 0))
+        f:write(string.format("%d. %s  %s  %s  laps %d  @%d km/h  resets %d  standing %s  rolling %s  %s\n", i, it.name, fmt(it.e.bestMs), sectorsText(it.e.sectors or {}),
+                              it.e.laps or 0, it.e.kph or 0, it.e.resets or 0, it.e.bestStandingMs and fmt(it.e.bestStandingMs) or "-",
+                              it.e.bestRollingMs and fmt(it.e.bestRollingMs) or "-", it.e.car or ""))
     end
     f:write(json(board), "\n\n")
     f:write("== last ", #tail, " lines of kkLap.log\n", table.concat(tail, "\n"), "\n")
@@ -912,7 +1051,7 @@ local function runCommand(pid, args, reply, name)
     elseif cmd == "race" then
         local sec = tonumber(args[3])
         if sec and sec == sec then cfg.countdown = math.floor(math.max(1, math.min(60, sec))) end   -- 1..60 (v0.24)
-        local ok, why = startCountdown(name)
+        local ok, why = startCountdown(name, (not fromConsole) and pid or nil)
         if ok then if fromConsole then reply("countdown started, " .. race.left .. " s") end
         else reply("no countdown: " .. why); log("I", "race by " .. name .. ": no countdown: " .. why) end
     elseif cmd == "autostart" then
@@ -929,7 +1068,12 @@ local function runCommand(pid, args, reply, name)
     elseif cmd == "rules" then
         sendRules(pid, nil)                  -- nil = toggle on the client
     elseif cmd == "admin" and args[3] == "add" and args[4] then
-        table.insert(cfg.admins, args[4]); saveCfg(); all(args[4] .. " is now a kkLap admin (by " .. name .. ")")
+        local who = args[4]
+        if who:lower() == "me" then                 -- v0.27: the typist's own account key (chat only: the console has none)
+            if fromConsole then reply("admin add me works from game chat only (the console has no account); use lap admin add <name or id:NNN>"); return end
+            who = playerKey(pid)
+        end
+        table.insert(cfg.admins, who); saveCfg(); all(who .. " is now a kkLap admin (by " .. name .. ")")
     elseif cmd == "admin" and args[3] == "remove" and args[4] then
         for i = #cfg.admins, 1, -1 do if cfg.admins[i] == args[4] then table.remove(cfg.admins, i) end end
         saveCfg(); reply("admins: " .. table.concat(cfg.admins, ", "))
@@ -972,14 +1116,18 @@ local function runCommand(pid, args, reply, name)
         log("I", "music " .. args[3] .. " by " .. name)
     elseif cmd == "times" then
         local list = sortedBoard()
-        if #list == 0 then reply(string.format("no times on the board yet (a driver needs %d laps first)", cfg.minLaps)) end
+        if #list == 0 then reply(cfg.minLaps > 1 and string.format("no times on the board yet (a driver needs %d laps first)", cfg.minLaps) or "no times on the board yet (finish a lap)") end
         local showPoints = #list >= cfg.pointsMinDrivers
         if #list > 0 and not showPoints then reply(string.format("points appear once %d drivers have times (%d so far)", cfg.pointsMinDrivers, #list)) end
         for i, it in ipairs(list) do
             if i > 10 then break end
             local pts = showPoints and string.format("  %d pts", pointsFor(it.e.bestMs, list[1].e.bestMs)) or ""
-            reply(string.format("%d. %s  %s  %s  (%d laps, @%d km/h, resets %d)%s", i, it.name, fmt(it.e.bestMs),
-                                sectorsText(it.e.sectors or {}), it.e.laps or 0, it.e.kph or 0, it.e.resets or 0, pts))
+            -- v0.27: the best standing and the best rolling lap both show; bestMs is the better of the two
+            local e = it.e
+            reply(string.format("%d. %s  %s  %s  (%d laps, @%d km/h, resets %d)  standing %s  rolling %s%s%s", i, it.name, fmt(e.bestMs),
+                                sectorsText(e.sectors or {}), e.laps or 0, e.kph or 0, e.resets or 0,
+                                e.bestStandingMs and fmt(e.bestStandingMs) or "-", e.bestRollingMs and fmt(e.bestRollingMs) or "-",
+                                e.car and ("  " .. e.car) or "", pts))
         end
     elseif cmd == "announce" then
         onOff(reply, pfx, args, "announceSplits", "sector announcements to everyone", false)
@@ -1100,6 +1248,8 @@ function onInit()
     MP.RegisterEvent("kkLap_invalid",      "onInvalid")
     MP.RegisterEvent("kkLap_tick",         "onTick")
     MP.RegisterEvent("kkLap_ack",          "onAck")            -- v0.25: client got the config, says its version
+    MP.RegisterEvent("kkLap_sweep",        "onSweep")          -- v0.27: once a second, drops runs with no checkpoint for timeoutS
+    MP.CreateEventTimer("kkLap_sweep", 1000)
     MP.RegisterEvent("onConsoleInput",     "onConsoleInput")   -- v0.25: "lap ..." typed in the server console
     log("I", PLUGIN .. " v" .. VERSION .. " loaded on " .. MP.GetOSName())
     -- a (re)load of this file starts with no runs and no bubble, so it is a track change for the

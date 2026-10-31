@@ -149,6 +149,12 @@ C.globals().jsonDecode = lambda s: py_to_lua(C, json.loads(s))
 # filled circle as 'circle r,g,b'; noDrawList makes GetWindowDrawList throw to prove the text fallback.
 C.execute("""
 scenetree = { findObjectById = function(id) return nil end }
+-- v0.27: core_vehicles.getModel(key).model.Brand/Name is how the client names a car (BeamNG GE, from memory);
+-- only etk800 is known here, every other key comes back empty so the client falls back to the key itself
+core_vehicles = { getModel = function(key)
+    local known = { etk800 = { Brand = 'ETK', Name = '800-Series' } }
+    return known[key] and { model = known[key] } or {}
+end }
 Engine = { Audio = { fail = 0, plays = {}, srcId = nil, deleted = {},
     createSource = function(ch, path) return Engine.Audio.srcId end,
     deleteSource = function(id) table.insert(Engine.Audio.deleted, id) end,
@@ -157,8 +163,9 @@ Engine = { Audio = { fail = 0, plays = {}, srcId = nil, deleted = {},
         table.insert(Engine.Audio.plays, path)
     end } }
 local drawn = {}
+local shadows = {}   -- v0.27: every pure-black TextColored (the drop shadow pass) lands here as { text, at = index of the coloured entry that follows }, not in drawn
 local function pf(t) if ui_imgui.failText then error('stub: text call failed') end; return string.format(t) end
-ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil, failText = false, noDrawList = false,   -- colours[i] = 'r,g,b' of drawn[i] (TextColored)
+ui_imgui = { drawn = drawn, shadows = shadows, scale = 1, colours = {}, failBegin = nil, failText = false, noDrawList = false, noCursor = false,   -- colours[i] = 'r,g,b' of drawn[i] (TextColored)
     Cond_Always = 1, Cond_FirstUseEver = 4,
     WindowFlags_NoTitleBar = 1, WindowFlags_NoResize = 2, WindowFlags_NoMove = 4, WindowFlags_NoBackground = 128,
     WindowFlags_NoInputs = 512, WindowFlags_NoFocusOnAppearing = 4096,
@@ -175,9 +182,14 @@ ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil, failText =
     SetWindowFontScale = function(f) ui_imgui.scale = f end,
     Text = function(t) table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. pf(t)) end,
     TextColored = function(c, t)
+        if c[1] == 0 and c[2] == 0 and c[3] == 0 then table.insert(shadows, { text = 'x' .. ui_imgui.scale .. ' ' .. pf(t), at = #drawn + 1, cursor = ui_imgui.cursor }); return end
         table.insert(drawn, 'x' .. ui_imgui.scale .. ' ' .. pf(t))
         ui_imgui.colours[#drawn] = string.format('%.2f,%.2f,%.2f', c[1], c[2], c[3])
     end,
+    -- v0.27: the cursor for the drop shadow; noCursor removes GetCursorPos to prove the plain fallback
+    cursor = '0,0',
+    GetCursorPos = function() if ui_imgui.noCursor then error('stub: GetCursorPos missing') end; return { x = 10, y = 20 } end,
+    SetCursorPos = function(v) ui_imgui.cursor = v.x .. ',' .. v.y end,
     TextWrapped = function(t) table.insert(drawn, 'w ' .. pf(t)) end, Separator = function() end, Button = function() return false end,
     SameLine = function() table.insert(drawn, 'sameline') end, Dummy = function() end,
     GetWindowDrawList = function() if ui_imgui.noDrawList then error('stub: no draw list') end; return {} end,
@@ -189,6 +201,7 @@ ui_imgui = { drawn = drawn, scale = 1, colours = {}, failBegin = nil, failText =
 AUDIO = C.globals().Engine["Audio"]
 DRAWN = C.globals().ui_imgui["drawn"]
 COLOURS = C.globals().ui_imgui["colours"]
+SHADOWS = C.globals().ui_imgui["shadows"]
 
 # ------------------------------------------------------------------ load real code
 work = pathlib.Path(tempfile.mkdtemp(prefix="kklap-bench-"))
@@ -271,7 +284,10 @@ def check(cond, what):
 # Darren 30/10: "i need ONLY admin commands for server side only terminal". BeamMP fires
 # onConsoleInput with each console line; a returned string is printed, nil = not ours.
 G0 = S.globals()
-check(G0.cfg["adminChat"] == False, "v0.25: adminChat is off by default")
+check(G0.cfg["adminChat"] == True, "v0.27: adminChat is on by default (Darren: admin controls in chat and in the console)")
+check(G0.cfg["minLaps"] == 1 and G0.cfg["maxLaps"] == 2 and G0.cfg["timeoutS"] == 30, "v0.27: defaults minLaps 1, maxLaps 2, timeoutS 30")
+check(console("lap set maxLaps 99") == "maxLaps = 99", "v0.27: (setup) maxLaps 99 for the scenarios below, which drive 3+ laps in one run; the v0.27 scenario puts 2 back")
+check(console("lap adminchat off").startswith("adminchat off"), "v0.27: (setup) the kill switch off: the v0.25 console-only checks below hold with it")
 mark = len(chat_out); cd0 = G0.cfg["countdown"]
 check(chat("/set countdown 7") == 1 and G0.cfg["countdown"] == cd0 and any(p == 1 and "admin commands run from the server console only" in m for p, m in chat_out[mark:]),
       "v0.25: /set countdown 7 in chat from pid 1 is refused with the console-only line, cfg unchanged")
@@ -373,8 +389,9 @@ check(realtime[0] == "", "the Race Realtime Display app clock stays empty while 
 check(any(pid == -1 and "Darren  lap 1" in m for pid, m in chat_out), "lap announced to everyone in chat")
 check(pathlib.Path("Resources/Server/kkLap/laps.log").exists(), "laps.log written")
 mark = len(chat_out); chat("/lap times")
-check(any("no times on the board yet" in m for _, m in chat_out[mark:]), "one lap is not enough for the board (minLaps 2)")
-check(any("one more lap and your best counts" in m for _, m in chat_out), "driver is told the minimum")
+check(any("1. Darren" in m and "standing 0:05.100  rolling -" in m for _, m in chat_out[mark:]), "v0.27: one lap is enough for the board (minLaps 1): /lap times lists it as the standing lap, no rolling yet")
+check(not any("one more lap and your best counts" in m for _, m in chat_out), "v0.27: the driver is not told to do one more lap")
+check(lap["lapType"] == "standing" and lap["car"] == "pickup", "v0.27: the first lap out of the bubble is typed standing and names the car (the jbeam key, nothing known about a pickup)")
 # second lap with one physics reset in it: counted, allowed
 drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 20)
 M.onVehReset(100)                                              # Insert: car did not move -> physics reset
@@ -383,6 +400,7 @@ drive(100, [(50, 0, 0)] * 30 + [(0, 0, 0)])
 lap2 = laps()[-1]
 check(lap2["laps"] == 2 and lap2["resets"] == 1, "lap 2 counts and carries resets=1")
 check(lap2.get("deltaMs") == lap2["lapMs"] - 5100, "lap 2 carries the delta to the previous best (+%d ms)" % (lap2["lapMs"] - 5100))
+check(lap2["lapType"] == "rolling" and json.load(open("Resources/Server/kkLap/times.json"))["id:42"]["bestRollingMs"] == lap2["lapMs"], "v0.27: lap 2 (drive-through) is rolling and goes on the board as the best rolling lap")
 splits = [json.loads(d) for (pid, n, d) in events_to_client if n == "kkLap_split"]
 check(splits[0].get("deltaMs") is None and splits[1].get("deltaMs") is not None, "first sector has no delta, the second time through it does")
 after1 = [f for t, f in timer_frames if t > t_lap1]
@@ -439,7 +457,7 @@ check(len(got) == 1 and got[0]["lapMs"] == clock_ms[0] - t_restart, "the lap aft
 # honk works from that state too (mid-lap, back in the bubble)
 for _ in range(200): tick()
 mark = len(chat_out); positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0.0); tick(); M.onHorn(100)
-check(any(pid == -1 and "race start in" in m for pid, m in chat_out[mark:]), "honk in the bubble arms a countdown whatever state the car was in")
+check(any(pid == 1 and "race start in" in m for pid, m in chat_out[mark:]), "honk in the bubble arms a countdown whatever state the car was in (v0.27: said to the racer, not to everyone)")
 for _ in range(130): tick()
 velocities[100] = (27.78, 0.0, 0.0)
 
@@ -498,12 +516,12 @@ check(timer_frames[-1][1] is not None and texts(timer_frames[-1][1]) == ["x3 0:0
       "v0.26: the timer window shows 0:00.000 and the honk hint while parked (%s)" % texts(timer_frames[-1][1]))
 M.onHorn(100)                                                 # vehicle Lua reports the horn; car 100 is on the line
 check(any("honked" in l and "countdown" in l for l in client_log[mark_cl:]), "a honk is sent to the server, which decides from its bubble roster")
-check(any(pid == -1 and "ready  (1 of 2 in the start bubble" in m for pid, m in chat_out[mark_chat:]), "with two cars in the bubble one honk is not enough: 1 of 2 ready")
+check(any(pid == 1 and "ready  (1 of 2 in the start bubble" in m for pid, m in chat_out[mark_chat:]), "with two cars in the bubble one honk is not enough: 1 of 2 ready (v0.27: to the racers)")
 check(any(n == "kkLap_hud" for (_, n, _) in events_to_client) and any(t.startswith("Darren ready  (1 of 2") and not big for t, big in hud_items()),
       "the 'ready 1 of 2' line reaches the on-screen HUD (kkLap_hud event lands in the queue)")
 check(not any("race start in" in m for _, m in chat_out[mark_chat:]), "no countdown until everyone in the bubble has honked")
 M.onHorn(101)                                                 # second car honks: everyone ready
-check(any(pid == -1 and "race start in 5" in m and "all 2 ready" in m for pid, m in chat_out[mark_chat:]), "second honk starts the countdown for the group")
+check(any(pid == 1 and "race start in 5" in m and "all 2 ready" in m for pid, m in chat_out[mark_chat:]), "second honk starts the countdown for the group")
 hud_big = []; drawn_mark = len(DRAWN)
 for _ in range(110):                                          # 5.5 s: 4,3,2,1, GO
     tick()
@@ -515,7 +533,8 @@ check(any(d == "x3 GO!" for d in drawn) and any(d.startswith("begin ##kkLapHud")
 check(any("HUD big text uses scale" in l for l in client_log), "which big-text method worked is logged once")
 check(any(t.startswith("race start in 5") for t, _ in hud_items()) or any(n == "kkLap_hud" and "race start in 5" in d for (_, n, d) in events_to_client),
       "'race start in 5' goes to the HUD as well as chat")
-check(any(pid == -1 and m.endswith("GO!") for pid, m in chat_out[mark_chat:]), "GO announced to everyone")
+check(any(pid == 1 and m.endswith("GO!") for pid, m in chat_out[mark_chat:]) and not any(pid == -1 and m.endswith("GO!") for pid, m in chat_out[mark_chat:]),
+      "GO announced to the racers, not to everyone (v0.27)")
 check(flashes[-6:] == ["5", "4", "3", "2", "1", "GO!"], "countdown flashed big 5..1 GO (%s)" % flashes[-6:])
 check(any("vid 100 GO start" in l for l in client_log[mark_cl:]) and any("vid 101 GO start" in l for l in client_log[mark_cl:]),
       "both parked cars take the GO start")
@@ -524,7 +543,7 @@ t_go = gos[-1]["t"]
 for _ in range(20): tick()                                    # sit 1 s after GO: must NOT re-arm
 for _ in range(100): tick()                                   # 5 s more: every HUD item has run out
 check(not any(t in ("5", "4", "3", "2", "1", "GO!") for t, _ in hud_items()), "HUD items expire after their ttl (%s)" % hud_items())
-check(sum(1 for pid, m in chat_out[mark_chat:] if pid == -1 and "race start in" in m) == 1, "no second countdown from cars still parked after GO")
+check(sum(1 for pid, m in chat_out[mark_chat:] if pid == 1 and "race start in" in m) == 1, "no second countdown from cars still parked after GO")
 velocities[100] = (27.78, 0.0, 0.0); velocities[101] = (27.78, 0.0, 0.0)
 # v0.26 (Darren: "first one out starts timer"): nobody's clock runs at GO. Both windows hold 0:00.000 with the GO hint
 seat0_vid[0] = 101; tick(); f101 = timer_frames[-1][1]; seat0_vid[0] = 100; tick(); f100 = timer_frames[-1][1]
@@ -557,7 +576,7 @@ mark_chat = len(chat_out); mark_f = len(flashes); X0 = len(events_to_server)
 for _ in range(10): tick()
 velocities[100] = (10.0, 0.0, 0.0); positions[100] = (20, 0, 0)   # drives off the line mid-countdown
 for _ in range(5): tick()
-check(any(pid == -1 and "jumped the start" in m for pid, m in chat_out[mark_chat:]), "driving off during the countdown is announced as a jump start")
+check(any(pid == 1 and "jumped the start" in m for pid, m in chat_out[mark_chat:]), "driving off during the countdown is announced as a jump start (to the racers, v0.27)")
 check(any("jumped the start" in t for t, _ in hud_items()), "the jump start reaches the HUD too")
 check(not any(n == "kkLap_jump" for n, _ in events_to_server) and any(n == "kkLap_bubble" and '"inside": false' in d and '"kph"' in d for n, d in events_to_server[X0:])
       and not any(f.startswith("no timing") for f in flashes[mark_f:]),
@@ -719,7 +738,7 @@ def bubble_setup():
     for _ in range(10): tick()
     M.onHorn(100)
     return len(chat_out)
-def countdown_since(mark): return [m for pid, m in chat_out[mark:] if pid == -1 and "race start in" in m]
+def countdown_since(mark): return [m for pid, m in chat_out[mark:] if pid == 1 and "race start in" in m]   # v0.27: said to the racers (pid 1), never to -1
 def bubble_keys(): return set(S.globals().bubble.keys())
 
 # (1) car 2 disappears from the own map: the 1 s sweep drops it, tells the server, countdown starts
@@ -736,7 +755,7 @@ for _ in range(120): tick()
 # (2) car 2 sits there and never honks: car 1 honks twice
 mark = bubble_setup()
 M.onHorn(100)
-check(any(pid == -1 and "honked twice: starting without the rest" in m for pid, m in chat_out[mark:]) and len(countdown_since(mark)) == 1,
+check(any(pid == 1 and "honked twice: starting without the rest" in m for pid, m in chat_out[mark:]) and len(countdown_since(mark)) == 1,
       "a second honk from a ready car starts the countdown without the car that never honked")
 check(any("honked twice" in t for t, _ in hud_items()), "the honk-twice line reaches the HUD")
 for _ in range(120): tick()
@@ -779,7 +798,12 @@ own_vids[:] = [100, 101]; seat0_vid[0] = 100
 positions[100] = (50, 0, 0); positions[101] = (300, 300, 0)
 velocities[100] = (27.78, 0.0, 0.0); velocities[101] = (27.78, 0.0, 0.0)
 for _ in range(220): tick()
-chat("/lap reset")
+# v0.27: one lap puts a driver on the board, and the board's best sectors are the reference for the split
+# gaps (v0.24). So the "no reference" lap below needs the board wiped: /lap clear, the same two points again.
+chat("/lap clear")
+positions[100] = (5, 0, 0); chat("/lap mark"); M.onSurface(100, True, "FL=ASPHALT")
+positions[100] = (100, 0, 0); chat("/lap mark 10"); M.onSurface(100, True, "FL=ASPHALT")
+positions[100] = (50, 0, 0)
 for _ in range(5): tick()
 check(all(f is None for _, f in timer_frames[-5:]), "timer: no window while no own car is timing")
 hud_seen.clear(); mark_t = len(toasts); mark_f = len(flashes)
@@ -1259,7 +1283,8 @@ def s_v25_logs():
     check(sum("onUpdate error x1:" in l and "bench: injected" in l for l in client_log[mc:]) == 1
           and sum("[KKLAP][C1] ERROR onUpdate error x1:" in l for l in server_log[ms:]) == 1, "v0.25 k: logged once and relayed to the server once")
     X0 = len(events_to_server); velocities[100] = (27.78, 0.0, 0.0)
-    drive(100, [(50, 0, 0), (100, 0, 0)])
+    check(any("run timed out Darren#100" in l for l in server_log[ms - 2000:]), "v0.27: (setup) the 65 s wait above timed the run out, so the car re-enters the bubble to cross")
+    drive(100, [(50, 0, 0), (0, 0, 0)])
     for _ in range(200): tick()
     check(crosses(X0, 100) and any("onUpdate error x12:" in l for l in client_log[mc:]), "v0.25 k: the extension keeps ticking (car 100 still crosses) and the count x12 is logged")
     # l: why the lap state was reset or kept
@@ -1332,8 +1357,8 @@ def s_v26_bubble():
           "v0.26 a: a fresh car driving into the start bubble: one 'at the line' cross, the server answers at the line, no timing started")
     for _ in range(40): tick()                                    # sits 2 s in the bubble
     fr = tframes(t_in, clock_ms[0])
-    check(fr and all(f and texts(f) == ["x3 0:00.000", "x1 in the start bubble: honk to race"] and f[0][1] == "1.00,1.00,1.00" for f in fr),
-          "v0.26 a: the timer window shows 0:00.000 big in white with the honk hint, and the clock stays at zero for the 2 s it sits there")
+    check(fr and all(f and texts(f) == ["x3 0:00.000", "x1 in the start bubble: honk to race"] and f[0][1] == "1.00,0.75,0.10" for f in fr),
+          "v0.26 a: the timer window shows 0:00.000 big in amber (v0.27) with the honk hint, and the clock stays at zero for the 2 s it sits there")
     check(not any("timing started" in m for m in infos(E0, 100)) and "TIMING STARTED" not in flashes[mf:], "v0.26 a: nothing started the clock")
     # (b) drives out without honking: nothing starts, the window hides; cp2 is not a split; back in = at the line again
     E1 = len(events_to_client); X1 = len(events_to_server); mf = len(flashes); L0 = len(laps())
@@ -1462,6 +1487,236 @@ def s_v26_races():
     check("race: active false" in r and "run Darren#102: next cp 2" in r, "v0.26 races: lap status lists the runs (%s)" % (r or "")[:80])
 guard("v0.26 races", s_v26_races)
 check(not dropped, "no client event was dropped by the server (after the v0.26 scenarios)")
+
+# ================================================================== v0.27 (Darren, 31/10, after a live evening with three drivers:
+# "Works mostly really well, just some little bugs and improvements."). Overlay only for players in a race; a run is
+# dropped after 30 s without a checkpoint; nameless board entries; standing + rolling laps both count; car make and
+# model; a run is maxLaps laps; admin commands in chat again (with the console kill switch); amber clock with a shadow.
+def s_v27_admin():
+    check(G.cfg["adminChat"] == True and list(G.cfg["admins"].values()) == ["Darren"], "v0.27 admin: (setup) adminChat on, admins locked to Darren")
+    mark = len(chat_out); chat_as(2, "Bob", "/set countdown 9")
+    check(G.cfg["countdown"] == 5 and said(mark, "admin only", 2), "v0.27 admin: a non-admin's chat /set is refused once admins are set")
+    mark = len(chat_out); chat("/set countdown 6")
+    check(G.cfg["countdown"] == 6 and said(mark, "countdown = 6", 1), "v0.27 admin: an admin's chat /set works again (adminChat on)")
+    chat("/set countdown 5")
+    mark = len(chat_out); chat("/admin add me")
+    check(list(G.cfg["admins"].values()) == ["Darren", "id:42"] and said(mark, "id:42 is now a kkLap admin") and json.load(open(cfgfile))["admins"] == ["Darren", "id:42"],
+          "v0.27 admin: /admin add me stores the typist's account key id:42, saved")
+    MPT = S.globals().MP; real_name = MPT["GetPlayerName"]
+    MPT["GetPlayerName"] = lambda pid: "photon_dazz" if pid == 1 else "p%d" % pid      # same account, another display name
+    mark = len(chat_out); chat_as(1, "photon_dazz", "/set countdown 7")
+    check(G.cfg["countdown"] == 7 and said(mark, "countdown = 7", 1), "v0.27 admin: isAdmin matches the account key under a different display name")
+    MPT["GetPlayerName"] = real_name; chat("/set countdown 5")
+    check(console("lap admin remove id:42") == "admins: Darren" and console("lap admin add me").startswith("admin add me works from game chat only"),
+          "v0.27 admin: the console removes the key; 'me' means nothing on the console")
+    mark = len(chat_out); chat("/help")
+    check(any(p == 1 and "/set minLapMs" in m and "timeoutS" in m and "maxLaps" in m for p, m in chat_out[mark:]), "v0.27 admin: chat /help lists the admin commands for an admin, timeoutS and maxLaps among the /set keys")
+    G.onPlayerJoin(1)
+    check(rs.admin is not None and any("timeoutS" in l for l in rs.admin.values()), "v0.27 admin: the rules window carries the admin lines again")
+    rs.open = False
+    check("timeoutS|pointsMinDrivers" in console("lap help") and "maxLaps" in console("lap help"), "v0.27 admin: lap help on the console lists them too")
+    # the kill switch: lap adminchat off refuses every admin command from every client, admins included, and cannot be flipped from chat
+    r = console("lap adminchat off"); mark = len(chat_out); n0 = len(kklog())
+    chat("/set countdown 9")
+    check(r.startswith("adminchat off") and G.cfg["countdown"] == 5 and said(mark, "admin commands run from the server console only", 1)
+          and any("chat command refused (adminChat off, console only): Darren: /set countdown 9" in l for l in kklog()[n0:]),
+          "v0.27 kill switch: lap adminchat off -> an admin's chat /set is refused with the console-only line and logged")
+    mark = len(chat_out); chat("/adminchat on"); chat("/lap adminchat on")
+    check(G.cfg["adminChat"] == False and len(said(mark, "adminchat is set from the server console only", 1)) == 2, "v0.27 kill switch: /adminchat on from chat is refused twice over and changes nothing")
+    r = console("lap adminchat on"); mark = len(chat_out); chat("/set countdown 6")
+    check(r.startswith("adminchat on") and G.cfg["countdown"] == 6 and said(mark, "countdown = 6", 1), "v0.27 kill switch: console lap adminchat on restores chat control")
+    chat("/set countdown 5")
+guard("v0.27 admin", s_v27_admin)
+
+def s_v27_engaged():
+    fresh_track([(0, 0, 0), (100, 0, 0)], own=(100, 101))
+    positions[101] = (50, 0, 0); velocities[101] = (0.0, 0.0, 0.0)     # parked 50 m from the start, not racing
+    for _ in range(3): tick()
+    m0 = len(DRAWN); tick(); tick()
+    check(not M.engaged() and not any(d.startswith("begin ##kkLap") for d in list(DRAWN.values())[m0:]), "v0.27 engaged: two own cars outside the bubble, nothing running: not engaged, no kkLap window drawn")
+    deliver_to_client("kkLap_hud", json.dumps({"msg": "someone else ready"})); mt = len(toasts); m0 = len(DRAWN); tick()
+    check(any(t == "someone else ready" for t, _ in hud_items()) and not any(d.startswith("begin ##kkLapHud") for d in list(DRAWN.values())[m0:]),
+          "v0.27 engaged: a HUD line that arrives while not engaged is queued, not drawn")
+    positions[100] = (0, 0, 0); tick(); tick()
+    check(M.engaged() and timer_frames[-1][1] is not None, "v0.27 engaged: car 100 in the bubble: engaged, the timer window shows")
+    E0 = len(events_to_client); mc = len(chat_out); mf = len(flashes)
+    M.onHorn(100)
+    for _ in range(25): tick()
+    sent = [(p, n) for p, n, d in events_to_client[E0:] if n in ("kkLap_count", "kkLap_hud")]
+    digits = [p for p, m in chat_out[mc:] if "race start in" in m or m == "[LAP] 4"]
+    check(len(sent) >= 3 and all(p == 1 for p, n in sent) and len(digits) == 2 and all(p == 1 for p in digits),
+          "v0.27 engaged: kkLap_count, kkLap_hud and the chat countdown go to the racer's pid 1, none to -1 (%s)" % sorted(set(sent)))
+    check(flashes[mf:][:2] == ["5", "4"], "v0.27 engaged: the digits flash while engaged (%s)" % flashes[mf:][:2])
+    own_vids[:] = [101]                                             # car 100 is not ours any more, mid-countdown
+    for _ in range(25): tick()                                      # the 1 s sweep prunes it and tells the server
+    mf = len(flashes); m0 = len(DRAWN); E1 = len(events_to_client)
+    for _ in range(80): tick()                                      # the countdown runs out on the server, nobody in it
+    check(not M.engaged() and flashes[mf:] == [] and not any(d.startswith("begin ##kkLap") for d in list(DRAWN.values())[m0:]),
+          "v0.27 engaged: the engaged car pruned: no digit, no GO, no window drawn (%s)" % flashes[mf:])
+    check(not any(n in ("kkLap_count", "kkLap_go", "kkLap_hud") for p, n, d in events_to_client[E1:]) and not any("race start" in m or m.endswith("GO!") for p, m in chat_out[mc:] if p == -1),
+          "v0.27 engaged: server: a countdown with nobody in the bubble and no run goes to nobody, never to -1")
+    own_vids[:] = [100, 101]
+    for _ in range(3): tick()                                       # car 100 ours again, in the bubble: at the line
+    check(M.engaged(), "v0.27 engaged: (setup) back in the bubble, engaged")
+    positions[100] = (20, 0, 0); tick(); tick()
+    check(M.engaged() and timer_frames[-1][1] is None, "v0.27 engaged: 20 m out of the bubble without a honk: still engaged (hysteresis), no clock to show")
+    positions[100] = (40, 0, 0); tick(); tick()
+    check(not M.engaged(), "v0.27 engaged: 40 m out: not engaged, the overlay is gone")
+    velocities[101] = (27.78, 0.0, 0.0)
+guard("v0.27 engaged", s_v27_engaged)
+
+def s_v27_timeout():
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    check(G.cfg["timeoutS"] == 30 and "timeoutS 30" in console("lap status"), "v0.27 timeout: timeoutS 30 by default, shown by lap status")
+    drive(100, [(0, 0, 0)]); race_start([100]); drive(100, [(50, 0, 0)]); drive(100, [(100, 0, 0)])   # out, cp2
+    E0 = len(events_to_client); mf = len(flashes); mc = len(chat_out); ms = len(server_log)
+    for _ in range(580): tick()                                     # 29 s with no checkpoint
+    f = timer_frames[-1][1]
+    check(infos(E0, 100) == [] and f and RUN.match(texts(f)[0]), "v0.27 timeout: 29 s without a checkpoint: the run is alive, the clock runs")
+    for _ in range(40): tick()                                      # 31 s
+    check(infos(E0, 100) == ["timed out"] and any("run timed out Darren#100: 3" in l and "since the last checkpoint (limit 30)" in l for l in server_log[ms:]),
+          "v0.27 timeout: 31 s: the server drops the run, logs it, tells the client")
+    check(said(mc, "lap timed out: 30 s without a checkpoint, honk in the start bubble to go again", 1) and flashes[mf:] == ["TIMED OUT"],
+          "v0.27 timeout: the driver is told in chat and gets one TIMED OUT flash (%s)" % flashes[mf:])
+    check(M.timerVid() is None and timer_frames[-1][1] is None and "run Darren#100: next cp 1" in console("lap status") and not M.engaged(),
+          "v0.27 timeout: the clock is gone, the run is back at the line, the player is not engaged any more")
+    drive(100, [(50, 0, 0), (0, 0, 0)]); race_start([100]); drive(100, [(50, 0, 0)]); t1 = clock_ms[0]
+    for _ in range(580): tick()
+    drive(100, [(100, 0, 0)])
+    for _ in range(580): tick()
+    L0 = len(laps()); drive(100, [(50, 0, 0), (0, 0, 0)])
+    got = laps()[L0:]
+    check(len(got) == 1 and got[0]["lapMs"] == clock_ms[0] - t1 and got[0]["lapMs"] > 58000, "v0.27 timeout: a lap with two 29 s sectors is counted in full (%s)" % [l["lapMs"] for l in got])
+    E1 = len(events_to_client); mf = len(flashes)
+    race_start([100])                                               # the car sits in the bubble, honks, GO, never drives out
+    for _ in range(640): tick()                                     # 32 s
+    check(infos(E1, 100) == ["GO start", "timed out"] and flashes[mf:][-1] == "TIMED OUT", "v0.27 timeout: a GO starter that never leaves the bubble times out 30 s after the GO (%s)" % infos(E1, 100))
+    check(console("lap set timeoutS 45") == "timeoutS = 45" and "timeoutS 45" in console("lap status"), "v0.27 timeout: lap set timeoutS 45 (chat /set too, item 7)")
+    console("lap set timeoutS 30")
+guard("v0.27 timeout", s_v27_timeout)
+
+def s_v27_board():
+    jbeams[100] = "etk800"
+    for k in list(M.carNames.keys()): M.carNames[k] = None
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    check(console("lap set maxLaps 2") == "maxLaps = 2", "v0.27 run: (setup) maxLaps 2, the default")
+    X0 = len(events_to_server); ml = len(client_log)
+    drive(100, [(0, 0, 0)])
+    check(any(n == "kkLap_bubble" and json.loads(d).get("car") == "ETK 800-Series" for n, d in events_to_server[X0:]) and sum("vid 100 is ETK 800-Series (etk800)" in l for l in client_log[ml:]) == 1,
+          "v0.27 car: entering the bubble names the car 'ETK 800-Series' (core_vehicles.getModel stub), logged once")
+    race_start([100])
+    check(any(n == "kkLap_arm" and json.loads(d).get("car") == "ETK 800-Series" for n, d in events_to_server[X0:]) and S.globals().bubble["1:100"]["car"] == "ETK 800-Series",
+          "v0.27 car: the honk carries the car, the server's bubble entry keeps it")
+    E0 = len(events_to_client); mc = len(chat_out); ms = len(server_log)
+    drive(100, [(50, 0, 0)]); t1 = clock_ms[0]
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)]); tA = clock_ms[0]        # the standing lap, 5.2 s
+    lapA = laps()[-1]
+    check(lapA["lapType"] == "standing" and lapA["car"] == "ETK 800-Series" and lapA["lapMs"] == tA - t1, "v0.27 laps: the lap out of the bubble is 'standing' and carries the car")
+    last = pathlib.Path("Resources/Server/kkLap/laps.log").read_text().splitlines()[-1]
+    check("  lap 1  " + fmt(lapA["lapMs"]) + "  standing  [" in last and "  in ETK 800-Series" in last, "v0.27 laps: laps.log: 'lap 1  m:ss.mmm  standing  [...]  ... in ETK 800-Series' (%s)" % last[20:])
+    e = board()["id:42"]
+    check(e["bestStandingMs"] == lapA["lapMs"] and e.get("bestRollingMs") is None and e["bestMs"] == lapA["lapMs"] and e["car"] == "ETK 800-Series" and e["sectors"] == lapA["sectors"] and e["bestType"] == "standing",
+          "v0.27 board: one standing lap: bestStandingMs set, no rolling, bestMs = standing with its sectors and car")
+    check(infos(E0, 100) == ["timing started"], "v0.27 run: lap 1 does not end the run")
+    drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 55 + [(0, 0, 0)]); tB = clock_ms[0]   # the rolling lap, slower
+    lapB = laps()[-1]; e = board()["id:42"]
+    check(lapB["lapType"] == "rolling" and lapB["lapMs"] == tB - tA and lapB["lapMs"] > lapA["lapMs"] and e["bestRollingMs"] == lapB["lapMs"] and e["bestMs"] == lapA["lapMs"] and e["laps"] == 2,
+          "v0.27 board: a slower rolling lap: bestRollingMs set, bestMs stays the standing one")
+    check(infos(E0, 100) == ["timing started", "run complete"] and said(mc, "run complete: back to the start line and honk to go again", 1)
+          and any("run complete Darren#100: 2 laps, back to the start line" in l for l in server_log[ms:]), "v0.27 run: the second lap completes the run: info, chat line, log")
+    st = console("lap status")
+    check("run Darren#100: next cp 1" in st and "laps 0" in st, "v0.27 run: the run is reset, next cp 1, laps 0")
+    for _ in range(115): tick()                                    # 5.75 s of the 6 s hold
+    hold = tframes(tB, tB + 5800)
+    check(hold and all(f and texts(f)[0] == "x3 LAP  " + fmt(lapB["lapMs"]) and texts(f)[1] == "x1 RUN COMPLETE - back to the start line to go again"
+                       and texts(f)[-1] == "x1 best " + fmt(lapA["lapMs"]) + "   lap 2" for f in hold),
+          "v0.27 run: the timer holds the LAP line 6 s with 'RUN COMPLETE - back to the start line to go again' under it")
+    for _ in range(20): tick()
+    check(timer_frames[-1][1] is None and M.timerVid() is None and M.engaged(), "v0.27 run: 6 s later the timer window is gone; in the bubble the player stays engaged")
+    L1 = len(laps()); E1 = len(events_to_client); X1 = len(events_to_server)
+    drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+    c = crosses(X1, 100)
+    check(len(laps()) == L1 and infos(E1, 100) == ["at the line"] and [(x["cp"], x.get("restart")) for x in c] == [(1, True)],
+          "v0.27 run: a third drive round after run complete is no lap: no cp2 cross, back in = at the line (%s)" % infos(E1, 100))
+    E2 = len(events_to_client)
+    race_start([100]); drive(100, [(50, 0, 0)]); t2 = clock_ms[0]
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)]); tC = clock_ms[0]        # standing again, 5.2 s
+    drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 48 + [(0, 0, 0)]); tD = clock_ms[0]   # rolling, 5.1 s: faster than everything
+    lapD = laps()[-1]; e = board()["id:42"]
+    check(infos(E2, 100) == ["GO start", "timing started", "run complete"] and lapD["lapType"] == "rolling" and lapD["lapMs"] == tD - tC == 5100
+          and e["bestRollingMs"] == 5100 and e["bestMs"] == 5100 and e["bestType"] == "rolling" and e["bestStandingMs"] == lapA["lapMs"] and e["sectors"] == lapD["sectors"] and e["laps"] == 4,
+          "v0.27 board: a new run; a faster rolling lap: bestMs follows it with its sectors, the standing best stays, 4 laps (%s)" % {k: e.get(k) for k in ("bestMs", "bestStandingMs", "bestRollingMs", "laps")})
+    tj = json.load(open("Resources/Server/kkLap/times.json"))["id:42"]
+    check(tj["bestStandingMs"] == lapA["lapMs"] and tj["bestRollingMs"] == 5100 and tj["car"] == "ETK 800-Series" and tj["standing"]["car"] == "ETK 800-Series",
+          "v0.27 board: times.json carries bestStandingMs, bestRollingMs and the car")
+    r = console("lap times")
+    check("standing " + fmt(lapA["lapMs"]) + "  rolling 0:05.100  ETK 800-Series" in r, "v0.27 board: lap times prints both laps and the car (%r)" % r[:90])
+    check(console("lap set maxLaps 3") == "maxLaps = 3" and "maxLaps 3" in console("lap status"), "v0.27 run: lap set maxLaps 3")
+    E3 = len(events_to_client); L3 = len(laps())
+    race_start([100]); drive(100, [(50, 0, 0)])
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+    for _ in range(2): drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+    got = laps()[L3:]
+    check(len(got) == 3 and got[2]["laps"] == 3 and infos(E3, 100) == ["GO start", "timing started", "run complete"], "v0.27 run: with maxLaps 3 the third lap counts and ends the run (%s)" % infos(E3, 100))
+    console("lap set maxLaps 99")
+    # car name fallback: core_vehicles.getModel missing -> the jbeam key, nothing throws
+    C.execute("core_vehicles.kept = core_vehicles.getModel; core_vehicles.getModel = nil")
+    for k in list(M.carNames.keys()): M.carNames[k] = None
+    X2 = len(events_to_server); errs = dict(M.frameErrors.items())
+    for _ in range(10): tick()
+    drive(100, [(50, 0, 0), (0, 0, 0)])
+    cars = [json.loads(d).get("car") for n, d in events_to_server[X2:] if n == "kkLap_bubble" and json.loads(d).get("inside")]
+    check(cars == ["etk800"] and dict(M.frameErrors.items()) == errs, "v0.27 car: getModel missing: the key 'etk800' is the name, nothing throws (%s)" % cars)
+    C.execute("core_vehicles.getModel = core_vehicles.kept")
+    for k in list(M.carNames.keys()): M.carNames[k] = None
+    del jbeams[100]
+guard("v0.27 board", s_v27_board)
+
+def s_v27_shadow():
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0.0)
+    for _ in range(3): tick()
+    def shadow_pairs(n0): return [(SHADOWS[i]["text"], DRAWN[SHADOWS[i]["at"]], COLOURS[SHADOWS[i]["at"]], SHADOWS[i]["cursor"]) for i in range(n0 + 1, len(SHADOWS) + 1)]
+    n0 = len(SHADOWS); tick()
+    pairs = shadow_pairs(n0)
+    check(("x3 0:00.000", "x3 0:00.000", "1.00,0.75,0.10", "12,22") in pairs and HUD["shadow"] == True,
+          "v0.27 shadow: the clock is drawn once in black at cursor+(2,2), then in amber on top (%s)" % pairs[:1])
+    M.onHorn(100); n0 = len(SHADOWS); tick()
+    pairs = shadow_pairs(n0)
+    check(("x3 5", "x3 5", "1.00,0.90,0.30", "12,22") in pairs, "v0.27 shadow: the countdown digit has its shadow too (%s)" % pairs[:1])
+    for _ in range(120): tick()
+    C.globals().ui_imgui["noCursor"] = True; HUD["shadow"] = None; mc = len(client_log)
+    n0 = len(SHADOWS); m0 = len(DRAWN)
+    for _ in range(3): tick()
+    check(len(SHADOWS) == n0 and HUD["shadow"] == False and not HUD["broken"] and sum("HUD shadow: cursor calls missing, no shadow" in l for l in client_log[mc:]) == 1
+          and any(d == "x3 0:00.000" for d in list(DRAWN.values())[m0:]),
+          "v0.27 shadow: no GetCursorPos in the binding: drawn plain, said once, HUD not broken")
+    C.globals().ui_imgui["noCursor"] = False; HUD["shadow"] = None
+    velocities[100] = (27.78, 0.0, 0.0)
+guard("v0.27 shadow", s_v27_shadow)
+
+def s_v27_names():
+    b = board()
+    b["guest6391187"] = {"bestMs": 150000, "laps": 1, "kph": 80, "resets": 0, "sectors": [70000, 80000]}   # live times.json, 27/10: no name field
+    b["id:999"] = {"bestMs": 160000, "laps": 1, "kph": 80, "resets": 0, "sectors": [80000, 80000]}
+    pathlib.Path("Resources/Server/kkLap/times.json").write_text(json.dumps(b))
+    ms = len(server_log)
+    S.execute(SERVER.read_text()); G.onInit()                       # a server (re)start reads the board
+    nb = board()
+    check(nb["guest6391187"]["name"] == "guest6391187" and any("board: entry guest6391187 had no name, the key is the name" in l for l in server_log[ms:]),
+          "v0.27 names: a nameless guest entry loads and is saved with name = key")
+    check(nb["id:999"]["name"] == "?" and sum("board: entry id:999 has no name yet" in l for l in server_log[ms:]) == 1, "v0.27 names: a nameless id: entry stays ? and is logged once")
+    check(nb["guest6391187"]["legacy"]["ms"] == 150000 and nb["guest6391187"]["bestMs"] == 150000 and nb["guest6391187"].get("bestStandingMs") is None,
+          "v0.27 names: a pre-0.27 bestMs is kept as a legacy lap, no standing or rolling invented for it")
+    r = console("lap times")
+    check("guest6391187  2:30.000" in r and "standing -  rolling -" in r, "v0.27 names: lap times shows the guest by its key with dashes for the two lap types (%r)" % r[:120])
+    for _ in range(3): tick()
+guard("v0.27 names", s_v27_names)
+check(not any(p == -1 and n in ("kkLap_count", "kkLap_go", "kkLap_hud") and '"cancel"' not in d for p, n, d in events_to_client),
+      "v0.27: over the whole bench no countdown, GO or race-start HUD line was sent to everyone (-1), only to the racers")
+check(not any(p == -1 and ("race start in" in m or m.endswith("GO!") or m in ("[LAP] 4", "[LAP] 3", "[LAP] 2", "[LAP] 1")) for p, m in chat_out),
+      "v0.27: nor a chat countdown line")
+check(not dropped, "no client event was dropped by the server (after the v0.27 scenarios)")
 
 print()
 print("bench dir:", work)
