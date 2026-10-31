@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.27'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.28'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 -- [vid] = { nextCp, inside, started, waiting, inStart, flashCp, flashT, lastPos, slewT, physResets, invalid }
@@ -335,7 +335,7 @@ local function onInfo(data)
         flash('TIMED OUT', 2, true)
         dbg(string.format('vid %s timed out: run dropped by the server', tostring(vid)))
     elseif d.msg == 'run complete' then
-        -- v0.27: the run's laps are done (cfg.maxLaps, standing + rolling). The LAP line holds 6 s with the hint
+        -- v0.27: the run's laps are done (cfg.maxLaps, cfg.maxLaps > 0). The LAP line holds 6 s with the hint
         -- under it, then the clock stops and the window goes; the next bubble entry is "at the line" again.
         if c then c.hold = 6; c.stopAfterHold = true; c.atLine = false; c.goLine = false
                   c.hint = { text = 'RUN COMPLETE - back to the start line to go again', ttl = 6 } end

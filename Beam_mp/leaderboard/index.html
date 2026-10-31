@@ -6,6 +6,7 @@
 <title>kkLap leaderboard</title>
 <style>
   /* One file, no build step. Reads times.json from the same folder every 30 seconds.
+     v0.28: the drop-down lists the driver's last 50 counted laps (history), newest first.
      v0.27 (Darren, 31/10): car make and model, standing and rolling lap, gap to the leader, ideal lap from the
      best sectors, and a click on a row opens that driver's laps with the sector times drawn as bars. */
   :root { --bg:#111; --fg:#eee; --dim:#888; --row:#1a1a1a; --gold:#e5c04b; --amber:#ffbf1a; --green:#5bd75b; --red:#e66; --bar:#2c2c2c; }
@@ -39,6 +40,10 @@
               display:none; white-space:nowrap; padding-bottom:2px; }
   .sec:hover span { display:block; }
   .legend { color:var(--dim); font-size:11px; margin-top:4px; }
+  .hist { border-collapse:collapse; margin-top:12px; width:auto; }
+  .hist th, .hist td { padding:3px 10px; font-size:13px; }
+  .hist td.pb { color:var(--green); }
+  .hist caption { text-align:left; color:var(--amber); font-size:14px; font-weight:600; padding:6px 0 2px; }
   .legend i { display:inline-block; width:10px; height:10px; vertical-align:-1px; margin:0 3px 0 10px; border-radius:2px; }
 </style>
 </head>
@@ -56,7 +61,7 @@
   <tbody id="rows"></tbody>
 </table>
 </div>
-<div class="hint">Click a driver for their standing and rolling lap with every sector. Standing = from the honk start, rolling = over the line at speed.
+<div class="hint">Click a driver for their standing and rolling lap with every sector, and their lap history (hover a time for its sectors). Standing = from the honk start, rolling = over the line at speed.
 Ideal lap = the driver's best time in every sector added up.</div>
 <script>
 // Same rules as the server: points = floor(100 * top / yours), shown once 3 drivers have a time.
@@ -91,8 +96,22 @@ function detail(e) {
                + lapBlock('Before 0.27 (type unknown)', e.legacy, e.bestSectors);
   const ideal = e.bestSectors && e.bestSectors.length ? `<div class="lap"><h3>Ideal lap ${fmt(sum(e.bestSectors))}</h3>
     <div class="meta">best sector times from any lap, added up · ${fmt(e.bestMs - sum(e.bestSectors))} left on the table</div></div>` : '';
-  return `<div class="laps">${blocks}${ideal}</div>
+  return `<div class="laps">${blocks}${ideal}</div>${history(e)}
     <div class="legend">hover a bar for the time<i style="background:var(--green)"></i>driver's best for that sector<i style="background:#7a4a1a"></i>1.5x slower than their best for that sector</div>`;
+}
+// every counted lap, newest first (times.json keeps the last 50 per driver from v0.28; laps.log on the server keeps all)
+function history(e) {
+  const h = e.history || [];
+  if (!h.length) return '<div class="legend">lap history starts with the next lap (v0.28)</div>';
+  const when = s => s ? new Date(s * 1000).toLocaleString([], { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : '-';
+  const rows = h.map((l, i) => `<tr><td class="num">${h.length - i}</td><td>${when(l.at)}</td>
+      <td class="num ${l.ms === e.bestMs ? 'pb' : ''}" title="${(l.sectors || []).map((ms, j) => 'S' + (j + 1) + ' ' + sec(ms)).join('  ')}">${fmt(l.ms)}</td>
+      <td class="num gap">${l.ms === e.bestMs ? 'best' : '+' + fmt(l.ms - e.bestMs)}</td>
+      <td>${l.type === 'standing' ? 'standing' : 'rolling'}</td><td class="car">${l.car ? esc(l.car) : '-'}</td>
+      <td class="num">${l.kph ? Math.round(l.kph) : '-'}</td><td class="num">${l.resets || 0}</td></tr>`).join('');
+  return `<table class="hist"><caption>Lap history (${h.length}${h.length >= 50 ? ', last 50' : ''})</caption>
+    <thead><tr><th class="num">#</th><th>When</th><th class="num">Time</th><th class="num">To best</th><th>Type</th><th>Car</th>
+    <th class="num">km/h at line</th><th class="num">Resets</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 let open = null;                                           // key of the driver whose detail is open, kept across reloads
 async function load() {

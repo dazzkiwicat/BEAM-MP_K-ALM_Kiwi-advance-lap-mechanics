@@ -285,7 +285,7 @@ def check(cond, what):
 # onConsoleInput with each console line; a returned string is printed, nil = not ours.
 G0 = S.globals()
 check(G0.cfg["adminChat"] == True, "v0.27: adminChat is on by default (Darren: admin controls in chat and in the console)")
-check(G0.cfg["minLaps"] == 1 and G0.cfg["maxLaps"] == 2 and G0.cfg["timeoutS"] == 30, "v0.27: defaults minLaps 1, maxLaps 2, timeoutS 30")
+check(G0.cfg["minLaps"] is None and G0.cfg["maxLaps"] == 0 and G0.cfg["timeoutS"] == 30, "v0.28: defaults: no minLaps any more, maxLaps 0 (no limit), timeoutS 30")
 check(console("lap set maxLaps 99") == "maxLaps = 99", "v0.27: (setup) maxLaps 99 for the scenarios below, which drive 3+ laps in one run; the v0.27 scenario puts 2 back")
 check(console("lap adminchat off").startswith("adminchat off"), "v0.27: (setup) the kill switch off: the v0.25 console-only checks below hold with it")
 mark = len(chat_out); cd0 = G0.cfg["countdown"]
@@ -1671,6 +1671,46 @@ def s_v27_board():
     for k in list(M.carNames.keys()): M.carNames[k] = None
     del jbeams[100]
 guard("v0.27 board", s_v27_board)
+
+# ---- v0.28 (log 31/10): a standing lap must reach the board even when the run then times out (the live
+# config.json still held minLaps 2); a timed-out run's lap count must not leak into the next run; maxLaps 0 =
+# no limit; every counted lap goes into the board entry's history; set names in any case.
+def s_v28():
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    G.cfg["minLaps"] = 2                                              # what the live config.json still carries: must be ignored
+    check(console("lap set maxLaps 2") == "maxLaps = 2", "v0.28: (setup) maxLaps 2, as on the live server")
+    b0 = board().get("id:42", {}); h0 = len(b0.get("history", [])); n0 = b0.get("laps", 0); ms = len(server_log)
+    drive(100, [(0, 0, 0)]); race_start([100]); drive(100, [(50, 0, 0)]); t1 = clock_ms[0]
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)]); lapA = laps()[-1]
+    drive(100, [(50, 0, 0)])
+    E0 = len(events_to_client)
+    for _ in range(640): tick()                                       # 32 s, no checkpoint: the run times out after lap 1
+    e = board()["id:42"]; h = e.get("history", [])
+    check(infos(E0, 100) == ["timed out"] and len(h) == h0 + 1 and h[0]["ms"] == lapA["lapMs"] and h[0]["type"] == "standing" and e["laps"] == n0 + 1,
+          "v0.28: one standing lap then a timeout: the lap is on the board and first in its history (%s)" % (h[:1],))
+    check(h[0]["car"] == lapA.get("car") and h[0]["sectors"] == lapA["sectors"] and isinstance(h[0]["at"], int) and h[0]["at"] > 1600000000,
+          "v0.28: a history row carries car, sectors and the time it was driven")
+    check(not any("not on the board yet" in l for l in server_log[ms:]), "v0.28: no 'not on the board yet' line any more")
+    E1 = len(events_to_client); L1 = len(laps())
+    drive(100, [(50, 0, 0), (0, 0, 0)]); race_start([100]); drive(100, [(50, 0, 0)])
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+    got = laps()[L1:]
+    check(len(got) == 1 and got[0]["laps"] == 1 and got[0]["lapType"] == "standing" and "run complete" not in infos(E1, 100),
+          "v0.28: the next run's first lap is lap 1, standing, and does not end the run (live: 'lap 2 standing' then 'run complete') (%s)" % infos(E1, 100))
+    check(console("lap set maxlaps 0") == "maxLaps = 0" and "maxLaps 0 (no limit)" in console("lap status"), "v0.28: lap set maxlaps 0 (any case) = no limit, lap status says so")
+    for _ in range(4): drive(100, [(50, 0, 0), (100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)])
+    got = laps()[L1:]
+    check(len(got) == 5 and got[-1]["laps"] == 5 and "run complete" not in infos(E1, 100) and M.timerVid() == 100,
+          "v0.28: maxLaps 0: five laps in one run, no run complete, the clock still runs (%s)" % infos(E1, 100))
+    h = board()["id:42"]["history"]
+    check([x["ms"] for x in h[:5]] == [l["lapMs"] for l in reversed(got)], "v0.28: history is newest first, one row per counted lap")
+    r = console("lap set 2")
+    check(r.startswith("set needs a name and a number") and "maxLaps" in r and "minLaps" not in r, "v0.28: 'lap set 2' explains the form and lists the names (%r)" % r[:60])
+    check(console("lap set maxLaps 101").startswith("maxLaps must be 0..100"), "v0.28: maxLaps above 100 refused")
+    G.cfg["minLaps"] = None
+    for _ in range(640): tick()
+    console("lap set maxLaps 99")
+guard("v0.28", s_v28)
 
 def s_v27_shadow():
     fresh_track([(0, 0, 0), (100, 0, 0)])

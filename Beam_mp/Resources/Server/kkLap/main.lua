@@ -15,7 +15,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.27"   -- same number as the client zip it was built with
+local VERSION  = "0.28"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -58,8 +58,7 @@ local defaultCfg = {
     countdown    = 5,        -- seconds
     lineStyle    = "paint",  -- start/finish line: "paint" = real road decal, "draw" = flat chequer (v0.8.0)
     lineWidth    = 10,       -- metres across the road
-    minLaps      = 1,        -- laps a driver must complete in one run before their laps count for the board (v0.10; v0.27: 1, a lap counts at once)
-    maxLaps      = 2,        -- counted laps in one run, then the clock stops: standing lap + rolling lap (v0.27, Darren 31/10)
+    maxLaps      = 0,        -- counted laps in one run, then the clock stops; 0 = no limit (v0.28, a driver asked for unlimited laps)
     timeoutS     = 30,       -- no checkpoint for this many seconds = the run is dropped, the clock stops (v0.27, Darren 31/10)
     pointsMinDrivers = 3,    -- points only show once this many drivers are on the board
     djText       = "DJ set is in the Discord voice channel: ask in Discord for the invite",   -- /dj prints this (v0.13)
@@ -74,7 +73,7 @@ local defaultCfg = {
         "Arrive after GO? Your own honk starts your own countdown.",
         "Physics reset (Insert) is allowed and counted. Recover / teleport = that lap does not count.",
         "Back in the start bubble any time = fresh start, partial lap dropped.",
-        "A run is two laps: a standing lap, then a rolling lap. Both go on the board, the best of the two is your time.",
+        "Your first lap is a standing lap, every lap after it is rolling. Every lap goes on the board, your best is your time.",
         "No checkpoint for 30 s = the run is dropped. Points once 3 drivers have times.",
     },
     musicAuto    = nil,      -- track every player hears from the moment they join (v0.22; v0.21 waited for a car); set by /music <name>, cleared by /music stop
@@ -220,9 +219,15 @@ end
 -- resets and car (as v0.24 did for the one best); the top-level fields are the better of the two (or a
 -- legacy lap). Merging by minimum, so calling it again with the same laps changes nothing.
 local function copyList(list) local out = {}; for i, v in ipairs(list or {}) do out[i] = v end; return out end
-local function boardPut(bkey, name, runBests, addLaps, bestSectors)
+local HISTORY_MAX = 50   -- laps kept per driver in times.json for the web page's drop-down (v0.28); laps.log keeps them all
+local function boardPut(bkey, name, runBests, addLaps, bestSectors, lapRow)
     local e = board[bkey] or {}
     e.name = name
+    if lapRow then                                   -- newest first, oldest dropped past HISTORY_MAX
+        e.history = e.history or {}
+        table.insert(e.history, 1, lapRow)
+        while #e.history > HISTORY_MAX do table.remove(e.history) end
+    end
     e.laps = (e.laps or 0) + (addLaps or 0)
     e.bestSectors = bestSectors or e.bestSectors
     for _, kind in ipairs({ "standing", "rolling" }) do
@@ -291,6 +296,8 @@ end
 local function dropRun(r)
     r.lapStart = nil; r.lastCp = nil; r.sectors = {}; r.resets = 0; r.invalid = false; r.invalidWhy = nil
     r.raceNo = nil; r.pendingGo = false; r.goT = nil; r.nextCp = 1
+    r.laps = 0; r.runBests = nil      -- v0.28: a timed-out run's count no longer carried into the next run (log 31/10:
+                                      -- "lap 2 standing", then "run complete" after one lap of the new run)
 end
 -- the run of one car (key pid:vid); made on first contact, its sector deltas start from the board's bests
 local function runFor(pid, vid)
@@ -642,26 +649,20 @@ function onCross(pid, data)
                 log("I", "LAP " .. line)
                 lapRecord(line)
                 if cfg.announceLaps then say(-1, line) end
-                -- the board: only once this driver has minLaps laps in this run (1 by default since v0.27: a single
-                -- standing lap counts); then the run's best standing and best rolling lap both go on
-                if r.laps >= cfg.minLaps then
-                    local bkey = playerKey(pid)
-                    -- laps on the board = counted laps: the first time this run qualifies, all of its laps so far
-                    local add = (r.laps == cfg.minLaps) and r.laps or 1
-                    local bs = {}
-                    for i, v in pairs(r.bestSectors) do bs[i] = v end
-                    boardPut(bkey, name, r.runBests, add, bs)
-                    saveBoard()
-                else
-                    log("I", string.format("board: %s has %d of %d laps this run, not on the board yet", who, r.laps, cfg.minLaps))
-                    if r.laps == 1 then say(pid, string.format("one more lap and your best counts for the board (minimum %d)", cfg.minLaps)) end
-                end
+                -- the board: every counted lap, at once (v0.28). Before, a lap waited for cfg.minLaps laps in the
+                -- run, and the live config.json still said 2: a standing lap followed by a reset or a timeout never
+                -- reached the board (log 31/10, "has 1 of 2 laps this run, not on the board yet", 18 times).
+                local bs = {}
+                for i, v in pairs(r.bestSectors) do bs[i] = v end
+                boardPut(playerKey(pid), name, r.runBests, 1, bs,
+                         { ms = lap, type = kind, car = r.car, kph = kph, resets = r.resets, at = os.time(), sectors = copyList(r.sectors) })
+                saveBoard()
             end
             r.resets = 0; r.invalid = false; r.invalidWhy = nil
-            local maxLaps = math.floor(tonumber(cfg.maxLaps) or 2)
+            local maxLaps = math.floor(tonumber(cfg.maxLaps) or 0)     -- 0 = no limit (v0.28)
             if cfg.finish then
                 dropRun(r)                                  -- course done: back into the start bubble, honk to go again
-            elseif counted and r.laps >= maxLaps then
+            elseif counted and maxLaps > 0 and r.laps >= maxLaps then
                 -- v0.27 (Darren, 31/10: "once person has done [the] laps the timer stops and it says must proceed back
                 -- to start line"): a run is maxLaps counted laps (2: standing + rolling). The clock stops here; the
                 -- next run starts from the bubble with a honk. Laps not counted (too short, invalidated) do not add up.
@@ -837,7 +838,7 @@ local ADMIN_HELP = {      -- chat spelling, shown only while adminChat is on
     "/race [sec] | /race stop | /reset | /autostart on|off | /announce on|off | /markers on|off",
     "/line paint|draw | /music <file> [vol] [once] | /music stop | /dj <text> | /hud on|off",
     "/rules add <text> | /rules clear | /admin add|remove <name> | /admin list | /status | /report",
-    "/set minLapMs | defaultRadius | markerAlpha | lineWidth | countdown | minLaps | maxLaps | timeoutS | pointsMinDrivers | musicVolume",
+    "/set minLapMs | defaultRadius | markerAlpha | lineWidth | countdown | maxLaps | timeoutS | pointsMinDrivers | musicVolume",
 }
 local CONSOLE_HELP = {    -- console spelling: "lap" first ("/lap" and "kklap" work too)
     "kkLap v" .. VERSION .. " admin commands, typed here in the server console:",
@@ -846,7 +847,7 @@ local CONSOLE_HELP = {    -- console spelling: "lap" first ("/lap" and "kklap" w
     "  lap race [sec] | lap race stop | lap autostart on|off | lap announce on|off | lap markers on|off",
     "  lap line paint|draw | lap music <file> [vol] [once] | lap music stop | lap dj [text] | lap hud on|off | lap debug on|off",
     "  lap rules | lap rules add <text> | lap rules clear | lap admin add|remove <name> | lap admin list",
-    "  lap set minLapMs|defaultRadius|markerAlpha|lineWidth|countdown|minLaps|maxLaps|timeoutS|pointsMinDrivers|musicVolume <n>",
+    "  lap set minLapMs|defaultRadius|markerAlpha|lineWidth|countdown|maxLaps|timeoutS|pointsMinDrivers|musicVolume <n>",
     "  lap times | lap status (what the plugin sees now) | lap report (writes report.txt to upload)",
     "  lap adminchat on|off   admins may type these in game chat too (off = console only)",
 }
@@ -858,10 +859,9 @@ local SET_KEYS = {
     markerAlpha      = { 0, 255, integer = true },
     lineWidth        = { 1, 50 },
     countdown        = { 1, 60, integer = true },
-    minLaps          = { 1, 100, integer = true },
     pointsMinDrivers = { 1, 100, integer = true },
     musicVolume      = { 0, 10 },
-    maxLaps          = { 1, 100, integer = true },     -- counted laps per run, then the clock stops (v0.27)
+    maxLaps          = { 0, 100, integer = true },     -- counted laps per run, then the clock stops; 0 = no limit (v0.27, 0 since v0.28)
     timeoutS         = { 5, 600, integer = true },     -- seconds without a checkpoint before the run is dropped (v0.27)
 }
 -- on|off commands: no argument SHOWS the value (v0.24; before, a bare /markers switched them off)
@@ -927,8 +927,8 @@ local function statusLines()
             ago(r.lapStart), r.laps or 0, r.best and fmt(r.best) or "-", tostring(r.invalid == true),
             r.invalidWhy and (" (" .. r.invalidWhy .. ")") or "", (r.raceNo and (", race " .. r.raceNo) or "") .. (r.pendingGo and ", GO start: waiting for the first car out" or ""))
     end
-    L[#L + 1] = string.format("cfg: countdown %s, minLaps %s, maxLaps %s, timeoutS %s, minLapMs %s, autoStart %s, musicAuto %s, hud %s, adminChat %s, debug %s, trackRev %s, admins %s",
-        tostring(cfg.countdown), tostring(cfg.minLaps), tostring(cfg.maxLaps), tostring(cfg.timeoutS), tostring(cfg.minLapMs), tostring(cfg.autoStart), tostring(cfg.musicAuto), tostring(cfg.hud),
+    L[#L + 1] = string.format("cfg: countdown %s, maxLaps %s, timeoutS %s, minLapMs %s, autoStart %s, musicAuto %s, hud %s, adminChat %s, debug %s, trackRev %s, admins %s",
+        tostring(cfg.countdown), (tonumber(cfg.maxLaps) or 0) > 0 and tostring(cfg.maxLaps) or "0 (no limit)", tostring(cfg.timeoutS), tostring(cfg.minLapMs), tostring(cfg.autoStart), tostring(cfg.musicAuto), tostring(cfg.hud),
         tostring(cfg.adminChat == true), tostring(cfg.debug), tostring(cfg.trackRev), #cfg.admins > 0 and table.concat(cfg.admins, ", ") or "none (everyone)")
     return L
 end
@@ -1116,7 +1116,7 @@ local function runCommand(pid, args, reply, name)
         log("I", "music " .. args[3] .. " by " .. name)
     elseif cmd == "times" then
         local list = sortedBoard()
-        if #list == 0 then reply(cfg.minLaps > 1 and string.format("no times on the board yet (a driver needs %d laps first)", cfg.minLaps) or "no times on the board yet (finish a lap)") end
+        if #list == 0 then reply("no times on the board yet (finish a lap)") end
         local showPoints = #list >= cfg.pointsMinDrivers
         if #list > 0 and not showPoints then reply(string.format("points appear once %d drivers have times (%d so far)", cfg.pointsMinDrivers, #list)) end
         for i, it in ipairs(list) do
@@ -1143,7 +1143,15 @@ local function runCommand(pid, args, reply, name)
         local path, n = writeReport()
         if path then reply(string.format("report written: %s (status, config, board, last %d lines of kkLap.log). Download it from the panel's Files tab and upload it.", path, n))
         else reply("could not write the report: " .. tostring(n)); log("E", "report not written: " .. tostring(n)) end
-    elseif cmd == "set" and args[3] and tonumber(args[4]) then
+    elseif cmd == "set" and not (args[3] and tonumber(args[4])) then
+        -- v0.28: "lap set 2" and "lap set lapmax2" (log 31/10) used to answer "unknown kkLap command 'set'"
+        local keys = {}
+        for k in pairs(SET_KEYS) do keys[#keys + 1] = k end
+        table.sort(keys)
+        reply("set needs a name and a number, e.g. set maxLaps 3 (0 = no limit). Names: " .. table.concat(keys, ", "))
+    elseif cmd == "set" then
+        -- any case: "lap set maxlaps 2" was refused on 31/10 because the name is maxLaps
+        for k in pairs(SET_KEYS) do if k:lower() == args[3]:lower() then args[3] = k end end
         local rule, v = SET_KEYS[args[3]], tonumber(args[4])
         if not rule then
             reply("unknown numeric option " .. args[3])

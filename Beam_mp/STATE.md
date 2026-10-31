@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-31 by Claude. Current version: **0.27** (server main.lua and client zip share it; **0.26 is what the live server runs**, 31/10, no errors in its log). Branch: claude/festive-ritchie-7slk5q
+Updated: 2026-10-31 by Claude. Current version: **0.28** (server main.lua and client zip share it; **0.27 is what the live server runs**, from 31/10 20:25, kkLap_2.log). Branch: claude/festive-ritchie-7slk5q
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -23,23 +23,32 @@ Darren has previously had a server plugin load and print to the console (chat 26
 so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
-v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. v0.25 (admin commands from the server console only; self-explaining logs, lap status, lap report) bench 244, NOT yet live. 
-## Next move (31/10, read this and go)
-1. Darren uploads v0.27: `Resources/Server/kkLap/main.lua`, `Resources/Client/kkLap_v0.27.zip` (delete the 0.26 zip)
-   AND `leaderboard/index.html` to the web host (new columns: Car, Standing, Rolling). Restart. Check: console
-   prints `kkLap v0.27 loaded on Linux`. Leaderboard is live at https://beamtimes.aimbot.co.nz (Darren, 31/10).
-2. First chat line, as photon_dazz: `/admin add me` (locks admin control to the account key id:775254; until then
-   everyone can change settings, v0.19 rule). Admin commands work in chat AND console again. Kill switch for a
-   hostile client: console `lap adminchat off` (chat cannot flip it).
-3. Live tests, cheapest first: a car parked 40 m from the start sees NO countdown, lights or clock when someone
-   else races; the clock is amber with a black shadow (log says "HUD shadow: cursor calls missing" if the shadow
-   failed); sit 31 s after a checkpoint -> TIMED OUT, clock gone; standing lap + rolling lap -> RUN COMPLETE, clock
-   stops, third pass through the line does nothing; the board shows Car / Standing / Rolling; `/set timeoutS 45`
-   and `/set maxLaps 3` from chat.
-4. The car name: the log line "vid N is <Brand Name> (key)". If it shows only the key (etk800), core_vehicles
-   .getModel is not what I remembered: send the line and I will fix the lookup.
-5. Anything odd: `lap report` in the console, upload report.txt here, grep it, never paste it.
-6. Parked: "client is a sensor" (server owns nextCp and every crossing, judges wrong-way from a velocity vector).
+v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. v0.25 (admin commands from the server console only; self-explaining logs, lap status, lap report) bench 244, NOT yet live.## Next move (31/10 late, read this and go)
+v0.28 = fixes from the v0.27 live log (kkLap_2.log, 31/10 20:25-23:49, 4 drivers) + Darren's asks. Bench 360, --break fails.
+What the log showed:
+- **The live config.json holds minLaps = 2** (stored by an older version; code defaults never override a saved
+  config). 18 standing laps logged "has 1 of 2 laps this run, not on the board yet"; a reset or timeout after lap 1
+  lost them. That is the "first lap not in times" report AND the "two start, one resets, the other's lap doesn't
+  count" report (race 31, 21:59: KiwiPower reset, photon_dazz's 2:34.840 standing lap never reached the board).
+  Each invalidation in the log came from that driver's own client: no cross-player reset bug found.
+- r.laps survived a timeout: next run's first lap logged "lap 2 standing" and ended the run ("run complete").
+- **live config.json has adminChat = false**: "chat command refused (adminChat off, console only)" twice.
+  Fix on the server: console `lap adminchat on`.
+- "lap set maxlaps 2", "lap set 2", "lap set lapmax2" all did nothing (name is case-sensitive, wrong form gave
+  "unknown kkLap command 'set'"). "lap set maxLaps 8" worked at 23:39.
+v0.28 changes: every counted lap goes on the board at once (minLaps gone); dropRun resets the run's lap count;
+maxLaps 0 = no limit (new default; the live config.json says 8, so: `lap set maxLaps 0`); set names any case,
+bad form prints the usage; board entry keeps `history` = last 50 counted laps {ms,type,car,kph,resets,at,sectors},
+newest first; leaderboard drop-down shows the history table (hover a time for its sectors).
+1. Darren uploads `Resources/Server/kkLap/main.lua`, `Resources/Client/kkLap_v0.28.zip` (delete 0.27 zip),
+   `leaderboard/index.html`. Restart. Console: `kkLap v0.28 loaded on Linux`.
+2. Console: `lap adminchat on`, then `lap set maxLaps 0`. Chat as photon_dazz: `/admin add me`.
+3. Live check: one standing lap then park 31 s -> the lap is on the web board and in the drop-down history.
+4. UNCHECKED live: car name lookup, HUD shadow (no failure lines in kkLap_2.log for either: "is Porsche 911 (992)"
+   shows getModel works).
+5. Parked: "client is a sensor" (server owns nextCp and every crossing, judges wrong-way from a velocity vector).
+
+
 
 ## Ground truth (checked)
 - BeamNG 0.40 (19 Oct 2026) has built-in split-screen + occupants. (web)
