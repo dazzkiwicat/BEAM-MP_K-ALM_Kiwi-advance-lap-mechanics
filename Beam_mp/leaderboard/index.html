@@ -1,159 +1,1057 @@
 <!doctype html>
+<!--
+  kkLap leaderboard page, v0.29
+  ---------------------------------------------------------------------------------------------
+  One file, no libraries, no build step. Put it next to times.json (the file the kkLap mod writes);
+  the page fetches times.json every 30 seconds and redraws.
+
+  What it reads (times.json, v0.29 shape):
+    _meta            { version, map, updated, maxLaps, timeoutS, checkpoints }   (may be missing: older server)
+    "id:775254"      one driver per key ("id:<beammp id>" or a guest name). Keys starting with "_" are not drivers.
+      name           shown on the board (missing or "?" -> the key is shown instead)
+      history[]      newest first, last 100 laps: { ms, type, car, map, kph, resets, at, sectors[] }
+      bests{}        the permanent record per map+car: "map|car": { map, car, laps, best, standing, rolling }
+                     (best/standing/rolling = { ms, type, sectors[], kph, resets, at })
+      older servers  no bests: the old summary fields (standing, rolling, legacy, bestMs, car ...) are used instead.
+  A best with no "type" is a lap from before 0.27 ("legacy"): it counts as a best lap only, never standing or rolling.
+
+  Rules kept from the old page: times print as m:ss.mmm, a missing/"?" name falls back to the key,
+  points = floor(100 * record / yours) and only show once 3 drivers have a time.
+
+  Layout of this file: 1 styles, 2 page skeleton, then the script in numbered sections
+  (settings, helpers, reading times.json, calculations, drawing, the chart, the driver panel, wiring).
+  Things you can safely change are all in section 0 of the script.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>kkLap leaderboard</title>
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0d10">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700&display=swap">
 <style>
-  /* One file, no build step. Reads times.json from the same folder every 30 seconds.
-     v0.28: the drop-down lists the driver's last 50 counted laps (history), newest first.
-     v0.27 (Darren, 31/10): car make and model, standing and rolling lap, gap to the leader, ideal lap from the
-     best sectors, and a click on a row opens that driver's laps with the sector times drawn as bars. */
-  :root { --bg:#111; --fg:#eee; --dim:#888; --row:#1a1a1a; --gold:#e5c04b; --amber:#ffbf1a; --green:#5bd75b; --red:#e66; --bar:#2c2c2c; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui, sans-serif; padding:16px; }
-  h1 { font-size:22px; margin:0 0 4px; }
-  .sub { color:var(--dim); font-size:13px; margin-bottom:12px; }
-  .wrap { overflow-x:auto; }                              /* phones: the table scrolls sideways, the page does not */
-  table { border-collapse:collapse; width:100%; max-width:1200px; }
-  th, td { padding:8px 10px; text-align:left; white-space:nowrap; }
-  th { color:var(--dim); font-weight:600; font-size:13px; border-bottom:1px solid #333; }
-  tbody tr.row { cursor:pointer; }
-  tbody tr.row:nth-child(4n+3) td { background:var(--row); }  /* every other driver row (detail rows sit between) */
-  tbody tr.row:hover td { background:#222; }
-  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
-  tr.top td { color:var(--gold); }
-  .tag { font-size:11px; color:var(--dim); margin-left:6px; text-transform:uppercase; letter-spacing:.04em; }
-  .car { color:#bbb; }
-  .gap { color:var(--dim); }
-  .err { color:var(--red); }
-  .hint { color:var(--dim); font-size:12px; margin-top:10px; }
-  /* the detail block under a clicked row */
-  tr.detail td { padding:4px 10px 14px 10px; white-space:normal; }
-  .laps { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px 24px; max-width:1200px; }
-  .lap h3 { margin:6px 0 2px; font-size:14px; color:var(--amber); }
-  .lap .meta { color:var(--dim); font-size:12px; margin-bottom:6px; }
-  .sectors { display:flex; align-items:flex-end; gap:2px; height:64px; }
-  .sec { flex:1; min-width:6px; background:var(--bar); position:relative; border-radius:2px 2px 0 0; }
-  .sec.best { background:var(--green); }                    /* equals the driver's best for that sector */
-  .sec.slow { background:#7a4a1a; }                         /* 1.5x the driver's best for that sector: a spin or a stop */
-  .sec span { position:absolute; bottom:100%; left:50%; transform:translateX(-50%); font-size:10px; color:var(--dim);
-              display:none; white-space:nowrap; padding-bottom:2px; }
-  .sec:hover span { display:block; }
-  .legend { color:var(--dim); font-size:11px; margin-top:4px; }
-  .hist { border-collapse:collapse; margin-top:12px; width:auto; }
-  .hist th, .hist td { padding:3px 10px; font-size:13px; }
-  .hist td.pb { color:var(--green); }
-  .hist caption { text-align:left; color:var(--amber); font-size:14px; font-weight:600; padding:6px 0 2px; }
-  .legend i { display:inline-block; width:10px; height:10px; vertical-align:-1px; margin:0 3px 0 10px; border-radius:2px; }
+/* ======================= 1. STYLES ======================= */
+:root {
+  color-scheme: dark;
+  --bg:#0b0d10; --panel:#14171c; --panel2:#1a1e25; --line:#23272e; --text:#e8eaed; --dim:#8a919c;
+  --amber:#ffbf1a;   /* same amber as the in-game clock */
+  --purple:#b26bff;  /* timing screens: purple = fastest of everyone shown */
+  --green:#3ddc84;   /* green = the driver's own best */
+  --yellow:#ffd23f;  /* yellow = slower than their best */
+  --red:#ff5c5c;
+  --gold:#f2c94c; --silver:#c3cad4; --bronze:#d08a4e;
+  --neutral:#2e343d; --spin:#7a3b2e;
+  --head:'Titillium Web', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --body:system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+* { box-sizing:border-box; }
+html, body { margin:0; }
+body { background:var(--bg); color:var(--text); font:15px/1.45 var(--body); -webkit-font-smoothing:antialiased; }
+body.noscroll { overflow:hidden; }
+button { font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer; text-align:inherit; }
+button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline:2px solid var(--amber); outline-offset:2px; border-radius:4px; }
+.wrap { max-width:1240px; margin:0 auto; padding:0 16px 40px; }
+.t { font-family:var(--head); font-variant-numeric:tabular-nums; }   /* every time uses this */
+.dim { color:var(--dim); }
+.pu { color:var(--purple); } .gr { color:var(--green); } .ye { color:var(--yellow); }
+
+/* top bar */
+.top { display:flex; align-items:center; gap:12px; padding:16px 0 12px; flex-wrap:wrap; }
+.brand { display:flex; align-items:center; gap:10px; font:700 28px/1 var(--head); letter-spacing:.02em; }
+.brand b { color:var(--amber); font-weight:700; }
+.brand svg { width:22px; height:22px; flex:none; }
+.pill { display:inline-flex; align-items:center; gap:7px; padding:3px 11px; border-radius:999px; font:600 13px var(--head); letter-spacing:.06em; border:1px solid var(--line); color:var(--dim); }
+.pill.live { color:var(--green); border-color:rgba(61,220,132,.45); background:rgba(61,220,132,.1); }
+.pill.live i { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 1.6s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(61,220,132,.7); } 70% { box-shadow:0 0 0 8px rgba(61,220,132,0); } 100% { box-shadow:0 0 0 0 rgba(61,220,132,0); } }
+.upd { margin-left:auto; color:var(--dim); font-size:13px; }
+.errline { margin:0 0 12px; padding:9px 12px; border:1px solid rgba(255,92,92,.5); background:rgba(255,92,92,.1); color:var(--red); border-radius:8px; font-size:14px; }
+
+/* chips (map / car / type / sort) */
+.chips { display:flex; gap:8px; flex-wrap:wrap; min-width:0; }
+.chip { display:inline-flex; align-items:center; gap:7px; padding:6px 13px; border:1px solid var(--line); border-radius:999px; background:var(--panel); font:600 14px var(--head); white-space:nowrap; }
+.chip:hover { border-color:#3a414b; }
+.chip.on { border-color:var(--amber); background:rgba(255,191,26,.12); color:var(--amber); }
+.chip .n { color:var(--dim); font-weight:400; font-size:12px; }
+.chip.on .n { color:inherit; opacity:.8; }
+.chip.zero { opacity:.5; }
+.maps { margin-bottom:6px; }
+
+/* tabs */
+.tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin:14px 0 18px; overflow-x:auto; scrollbar-width:none; }
+.tab { padding:10px 18px; font:600 17px var(--head); color:var(--dim); border-bottom:3px solid transparent; margin-bottom:-1px; white-space:nowrap; }
+.tab:hover { color:var(--text); }
+.tab.on { color:var(--text); border-bottom-color:var(--amber); }
+
+/* filter rows */
+.filters { display:grid; gap:10px; margin-bottom:18px; }
+.frow { display:flex; align-items:center; gap:12px; min-width:0; }
+.fl { flex:0 0 48px; color:var(--dim); font:600 12px var(--head); text-transform:uppercase; letter-spacing:.08em; }
+.frow .chips { flex:1 1 auto; }
+.search { margin-left:auto; flex:0 0 230px; background:var(--panel); border:1px solid var(--line); border-radius:999px; color:var(--text); padding:7px 14px; font:inherit; font-size:14px; }
+.search::placeholder { color:var(--dim); }
+
+/* podium */
+.podium { display:grid; grid-template-columns:1fr 1.2fr 1fr; gap:12px; align-items:end; margin-bottom:20px; }
+.podium.n1 { grid-template-columns:minmax(0,420px); justify-content:center; }
+.podium.n2 { grid-template-columns:1fr 1fr; }
+.pcard { position:relative; background:var(--panel); border:1px solid var(--line); border-top:3px solid var(--c); border-radius:12px; padding:14px 16px; min-width:0; }
+.pcard.p1 { --c:var(--gold); padding:22px 18px; background:linear-gradient(180deg, rgba(242,201,76,.09), var(--panel) 65%); order:2; }
+.pcard.p2 { --c:var(--silver); order:1; }
+.pcard.p3 { --c:var(--bronze); order:3; }
+.podium.n2 .p1 { order:1; } .podium.n2 .p2 { order:2; }
+.pcard .pp { font:700 13px var(--head); letter-spacing:.1em; color:var(--c); }
+.pcard .pname { display:inline-block; font:700 20px/1.2 var(--head); margin:2px 0 6px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pcard.p1 .pname { font-size:24px; }
+.pcard .ptime { font:700 30px/1.1 var(--head); font-variant-numeric:tabular-nums; }
+.pcard.p1 .ptime { font-size:40px; color:var(--purple); }
+.pcard .pmeta { display:flex; gap:10px; align-items:center; margin-top:6px; color:var(--dim); font-size:13px; flex-wrap:wrap; }
+.pcard .pmeta .medal { margin-left:auto; }
+
+/* boxes, tables */
+.box { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow-x:auto; }
+.tb { width:100%; border-collapse:collapse; }
+.tb th { padding:10px 9px; text-align:left; white-space:nowrap; font:600 12px var(--head); color:var(--dim); text-transform:uppercase; letter-spacing:.07em; border-bottom:1px solid var(--line); }
+.tb td { padding:9px 9px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:middle; }
+.tb tbody tr:last-child td { border-bottom:0; }
+.tb tbody tr:hover td { background:var(--panel2); }
+.tb .r { text-align:right; }
+.tb .click { cursor:pointer; }
+.lnk { font-weight:600; color:var(--text); border-bottom:1px dotted var(--dim); }
+.lnk:hover { color:var(--amber); border-bottom-color:var(--amber); }
+.c-drv .lnk { display:inline-block; max-width:190px; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; white-space:nowrap; }
+.posm { display:none; }
+.pos { font:700 16px var(--head); color:var(--dim); }
+.pos.m1 { color:var(--gold); } .pos.m2 { color:var(--silver); } .pos.m3 { color:var(--bronze); }
+.car { color:#c5cad2; }
+.tag { display:inline-block; min-width:18px; text-align:center; font:700 11px var(--head); padding:1px 5px; border-radius:4px; border:1px solid var(--line); color:var(--dim); margin-left:6px; vertical-align:2px; }
+.medal { display:inline-grid; place-items:center; width:21px; height:21px; border-radius:50%; font:700 11px var(--head); border:1.5px solid currentColor; }
+.medal.g { color:var(--gold); background:rgba(242,201,76,.12); } .medal.s { color:var(--silver); background:rgba(195,202,212,.1); } .medal.b { color:var(--bronze); background:rgba(208,138,78,.12); }
+.bdg { display:inline-block; font:700 11px var(--head); letter-spacing:.06em; padding:1px 7px; border-radius:4px; margin-left:4px; }
+.bdg.pb { color:var(--green); background:rgba(61,220,132,.12); border:1px solid rgba(61,220,132,.4); }
+.bdg.rc { color:var(--purple); background:rgba(178,107,255,.13); border:1px solid rgba(178,107,255,.45); }
+.empty { padding:26px 16px; text-align:center; color:var(--dim); }
+
+/* sector strip: one block per sector */
+.strip { display:flex; gap:2px; height:14px; width:170px; }
+.sb { flex:1 1 0; min-width:0; background:var(--neutral); border-radius:2px; }
+.sb:hover { outline:1px solid var(--text); }
+.sb.p { background:var(--purple); } .sb.g { background:var(--green); } .sb.x { background:var(--spin); }
+
+.ideal { margin:16px 0 4px; padding:14px 16px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+.ideal .big { font:700 22px var(--head); }
+.ideal .small { margin-top:6px; color:var(--dim); font-size:12.5px; line-height:1.6; }
+.ideal .small b { color:var(--text); font-weight:600; }
+.foot { margin-top:22px; color:var(--dim); font-size:12.5px; line-height:1.7; }
+.foot i { display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:-1px; margin:0 4px 0 12px; }
+.more { display:block; margin:14px auto 0; padding:9px 22px; border:1px solid var(--line); border-radius:999px; background:var(--panel); font:600 14px var(--head); }
+.more:hover { border-color:var(--amber); color:var(--amber); }
+
+/* a lap that arrived since the last refresh */
+.fresh td, .fresh.pcard, .fresh.card { animation:flash 4s ease-out; }
+tr.fresh { animation:flash 4s ease-out; }
+@keyframes flash { from { background:rgba(255,191,26,.3); } to { background:transparent; } }
+
+/* hover tip (sector times) */
+.tip { position:fixed; z-index:90; background:#1d2128; border:1px solid #384049; border-radius:8px; padding:6px 10px; font-size:12.5px; pointer-events:none; box-shadow:0 8px 28px rgba(0,0,0,.55); max-width:260px; }
+.tip b { font:700 15px var(--head); font-variant-numeric:tabular-nums; display:block; }
+.tip span { color:var(--dim); display:block; }
+
+/* driver panel */
+.scrim { position:fixed; inset:0; background:rgba(0,0,0,.6); opacity:0; transition:opacity .2s; z-index:50; }
+.drawer { position:fixed; top:0; right:0; bottom:0; width:min(860px,100vw); background:var(--bg); border-left:1px solid var(--line); z-index:60; display:flex; flex-direction:column; transform:translateX(100%); transition:transform .22s ease; box-shadow:-20px 0 60px rgba(0,0,0,.5); }
+.dopen .scrim { opacity:1; } .dopen .drawer { transform:none; }
+.dhead { display:flex; align-items:flex-start; gap:12px; padding:16px 16px 12px; border-bottom:1px solid var(--line); background:var(--panel); }
+.dhead h2 { margin:0; font:700 26px/1.15 var(--head); overflow-wrap:anywhere; }
+.dhead .dsub { color:var(--dim); font-size:14px; margin-top:3px; }
+.dhead .x { margin-left:auto; flex:none; width:38px; height:38px; border-radius:50%; border:1px solid var(--line); font-size:22px; line-height:1; display:grid; place-items:center; text-align:center; }
+.dhead .x:hover { border-color:var(--amber); color:var(--amber); }
+.gtag { display:inline-block; font:600 11px var(--head); letter-spacing:.08em; text-transform:uppercase; color:var(--dim); border:1px solid var(--line); border-radius:4px; padding:0 6px; margin-left:8px; vertical-align:4px; }
+.dbody { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:16px; }
+.dbody .filters { margin-bottom:14px; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(138px,1fr)); gap:10px; margin-bottom:16px; }
+.tile { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:11px 13px; min-width:0; }
+.tile .tl { color:var(--dim); font:600 12px var(--head); text-transform:uppercase; letter-spacing:.07em; }
+.tile .tv { font:700 24px/1.2 var(--head); font-variant-numeric:tabular-nums; margin-top:2px; }
+.tile .ts { color:var(--dim); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.h3 { margin:20px 0 8px; font:700 17px var(--head); letter-spacing:.02em; }
+.h3 small { color:var(--dim); font-weight:400; font-size:13px; margin-left:8px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
+.card { display:block; width:100%; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:11px 13px; min-width:0; }
+.card:hover { border-color:#3a414b; }
+.card.on { border-color:var(--amber); }
+.card .cn { font:600 15px var(--head); display:flex; gap:8px; align-items:center; }
+.card .cn span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.card .cn .medal { margin-left:auto; flex:none; }
+.card .cb { font:700 22px var(--head); font-variant-numeric:tabular-nums; }
+.card .cm { color:var(--dim); font-size:12px; }
+.chart { position:relative; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:8px 6px 4px; }
+.chart svg { display:block; width:100%; }
+.chart svg:focus { outline:none; }
+.chart svg:focus-visible { outline:2px solid var(--amber); }
+.chart .ctip { position:absolute; z-index:5; pointer-events:none; background:#1d2128; border:1px solid #384049; border-radius:8px; padding:7px 10px; font-size:12.5px; box-shadow:0 8px 28px rgba(0,0,0,.55); white-space:nowrap; }
+.ctip .cv { font:700 17px var(--head); font-variant-numeric:tabular-nums; }
+.ctip .cs { color:var(--dim); display:block; }
+.clegend { display:flex; gap:16px; flex-wrap:wrap; color:var(--dim); font-size:12.5px; padding:6px 8px 6px; }
+.clegend i { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; vertical-align:-1px; }
+.clegend i.ln { width:16px; height:0; border-radius:0; border-top:2px dashed var(--green); vertical-align:3px; }
+.hist { min-width:760px; }
+.hist th, .hist td { padding:8px 7px; }
+.note { color:var(--dim); font-size:12.5px; margin:8px 0; }
+.hist .strip { width:150px; }
+
+/* svg chart parts (colours come from the variables above) */
+.ch-grid { stroke:var(--line); stroke-width:1; }
+.ch-axis { stroke:#333a43; stroke-width:1; }
+.ch-txt { fill:var(--dim); font:12px var(--head); }
+.ch-line { fill:none; stroke:var(--amber); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+.ch-best { stroke:var(--green); stroke-width:1.5; stroke-dasharray:6 5; }
+.ch-pt { stroke:var(--panel); stroke-width:2; }
+.ch-cross { stroke:var(--dim); stroke-width:1; opacity:.6; }
+
+/* ---------- phones and small screens: tables turn into cards ---------- */
+@media (max-width:900px) {
+  .box.cardbox { background:none; border:0; overflow:visible; border-radius:0; }
+  .tb.cardy, .tb.cardy tbody { display:block; }
+  .tb.cardy thead { display:none; }
+  .tb.cardy tr { display:grid; grid-template-columns:repeat(10,minmax(0,1fr)); gap:5px 8px; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:10px; }
+  .tb.cardy tbody tr:hover td { background:none; }
+  .tb.cardy td { padding:0; border:0; white-space:normal; min-width:0; text-align:left; }
+  .tb.cardy td.r { text-align:left; }
+  .tb.cardy td[data-l]::before { content:attr(data-l); display:block; color:var(--dim); font:600 10px var(--head); text-transform:uppercase; letter-spacing:.08em; }
+  .posm { display:inline-block; font:700 15px var(--head); color:var(--dim); margin-right:8px; min-width:16px; }
+  .c-pos { display:none !important; }
+  .c-drv .lnk { max-width:100%; white-space:normal; overflow:visible; overflow-wrap:anywhere; }   /* a long name with no spaces wraps instead of running under the time */
+  .tb.cardy td.c-time, .tb.cardy td.c-gap, .rc td.c-type, .rc td.c-badge { text-align:right; }
+  .lb .c-drv { grid-column:1/7; grid-row:1; } .lb .c-time { grid-column:7/11; grid-row:1; font-size:20px; }
+  .lb .c-car { grid-column:1/7; grid-row:2; } .lb .c-gap { grid-column:7/11; grid-row:2; }
+  .lb .c-sec { grid-column:1/11; grid-row:3; margin:4px 0; } .lb .strip { width:100%; height:18px; }
+  .lb .c-int { grid-column:1/3; grid-row:4; } .lb .c-kph { grid-column:3/5; grid-row:4; }
+  .lb .c-laps { grid-column:5/7; grid-row:4; } .lb .c-medal { grid-column:7/9; grid-row:4; } .lb .c-pts { grid-column:9/11; grid-row:4; }
+  .cr .c-car { grid-column:1/7; grid-row:1; font-weight:600; } .cr .c-time { grid-column:7/11; grid-row:1; font-size:20px; }
+  .cr .c-hold { grid-column:1/7; grid-row:2; } .cr .c-gap { grid-column:7/11; grid-row:2; }
+  .cr .c-nd { grid-column:1/5; grid-row:3; } .cr .c-laps { grid-column:5/11; grid-row:3; }
+  .rc .c-drv { grid-column:1/7; grid-row:1; } .rc .c-time { grid-column:7/11; grid-row:1; font-size:20px; }
+  .rc .c-car { grid-column:1/7; grid-row:2; } .rc .c-type { grid-column:7/11; grid-row:2; }
+  .rc .c-when { grid-column:1/6; grid-row:3; color:var(--dim); font-size:13px; } .rc .c-badge { grid-column:6/11; grid-row:3; }
+  .podium, .podium.n2 { grid-template-columns:1fr; gap:8px; }
+  .pcard.p1, .pcard.p2, .pcard.p3 { order:0; padding:12px 14px; }
+  .pcard.p1 { order:-1; }
+  .pcard { display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:12px; align-items:center; }
+  .pcard .pp { grid-column:1/3; }
+  .pcard .pname { grid-column:1; justify-self:start; margin-bottom:2px; }
+  .pcard .ptime, .pcard.p1 .ptime { grid-column:2; grid-row:2/4; font-size:28px; text-align:right; }
+  .pcard .pmeta { grid-column:1; margin-top:0; }
+}
+@media (max-width:760px) {
+  .wrap { padding:0 14px 32px; }
+  .chips.scroll { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; margin:0 -14px; padding:0 14px 2px; }
+  .chips.scroll::-webkit-scrollbar { display:none; }
+  .frow { display:block; } .fl { display:block; margin-bottom:6px; }
+  .search { margin:10px 0 0; width:100%; flex:none; display:block; }
+  .upd { margin-left:0; width:100%; }
+  .brand { font-size:25px; }
+  .dhead h2 { font-size:22px; }
+  .tabs { margin-top:10px; }
+  .tab { padding:10px 14px; font-size:16px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  *, *::before, *::after { animation:none !important; transition:none !important; }
+}
 </style>
 </head>
 <body>
-<h1>kkLap leaderboard</h1>
-<div class="sub" id="sub">loading times.json…</div>
 <div class="wrap">
-<table>
-  <thead><tr>
-    <th class="num">#</th><th>Driver</th><th>Car</th>
-    <th class="num">Best lap</th><th class="num">Gap</th>
-    <th class="num">Standing</th><th class="num">Rolling</th><th class="num">Ideal lap</th>
-    <th class="num">Laps</th><th class="num">km/h at line</th><th class="num">Resets</th><th class="num">Points</th>
-  </tr></thead>
-  <tbody id="rows"></tbody>
-</table>
+  <header class="top">
+    <div class="brand">
+      <!-- little chequered flag -->
+      <svg viewBox="0 0 22 22" aria-hidden="true"><rect width="22" height="22" rx="4" fill="#14171c" stroke="#23272e"/><g fill="#ffbf1a"><rect x="3" y="3" width="5" height="5"/><rect x="13" y="3" width="5" height="5"/><rect x="8" y="8" width="5" height="5"/><rect x="3" y="13" width="5" height="5"/><rect x="13" y="13" width="5" height="5"/></g></svg>
+      <span>kk<b>Lap</b></span>
+    </div>
+    <span id="live"></span>
+    <span class="upd t" id="upd"></span>
+  </header>
+  <div class="errline" id="err" hidden role="alert"></div>
+  <nav class="chips scroll maps" id="maps" aria-label="Map"></nav>
+  <nav class="tabs" id="tabs" role="tablist"></nav>
+  <main id="view"><div class="empty">Loading times.json...</div></main>
 </div>
-<div class="hint">Click a driver for their standing and rolling lap with every sector, and their lap history (hover a time for its sectors). Standing = from the honk start, rolling = over the line at speed.
-Ideal lap = the driver's best time in every sector added up.</div>
+<div id="drawerRoot"></div>
+<div class="tip" id="tip" hidden></div>
+
 <script>
-// Same rules as the server: points = floor(100 * top / yours), shown once 3 drivers have a time.
-const POINTS_MIN_DRIVERS = 3;
-const esc = s => String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+'use strict';
+/* ======================= 0. SETTINGS (safe to change) ======================= */
+const REFRESH_MS = 30000;          // how often times.json is fetched
+const POINTS_MIN_DRIVERS = 3;      // points only show once this many drivers have a time
+const LIVE_MINUTES = 15;           // LIVE pill while the newest lap is younger than this
+const PAGE_SIZE = 50;              // rows per page on the Recent laps tab
+const SPIN_FACTOR = 1.5;           // a sector slower than 1.5x the driver's best for it is drawn as a spin
+const FRESH_MS = 8000;             // how long a brand new lap stays highlighted
+// Medal tiers: share of the record (record = fastest lap on the chosen map + car filter)
+const MEDALS = [
+  { name:'Gold',   cls:'g', letter:'G', max:1.02 },   // within 2 % of the record
+  { name:'Silver', cls:'s', letter:'S', max:1.05 },   // within 5 %
+  { name:'Bronze', cls:'b', letter:'B', max:1.10 },   // within 10 %
+];
+// Map slug (the game's name) -> what the page shows. Unknown slugs: underscores become spaces, Title Case.
+const MAP_NAMES = new Map(Object.entries({
+  west_coast_usa:'West Coast, USA', east_coast_usa:'East Coast, USA', utah:'Utah', italy:'Italy', gridmap_v2:'Grid Map',
+  jungle_rock_island:'Jungle Rock Island', johnson_valley:'Johnson Valley', small_island:'Small Island',
+  industrial:'Industrial Site', hirochi_raceway:'Hirochi Raceway', automation_test_track:'Automation Test Track',
+  derby:'Derby Arenas', driver_training:'Driver Training',
+}));
+const TABS = [['board', 'Leaderboard'], ['cars', 'Cars'], ['recent', 'Recent laps']];
+const TYPES = [['best', 'Best'], ['standing', 'Standing'], ['rolling', 'Rolling']];
+
+/* ======================= 2. SMALL HELPERS ======================= */
+const $ = id => document.getElementById(id);
+const ESC = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' };
+// Names, cars and maps are typed by players: EVERYTHING that goes into HTML passes through esc().
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ESC[c]);
+const sum = a => a.reduce((x, y) => x + y, 0);
+const posNum = x => { x = Number(x); return Number.isFinite(x) && x > 0 ? x : 0; };   // a positive number, or 0
+const lapsStr = n => n > 0 ? String(n) : '-';                                          // 0 laps shows "-"
+// Time as m:ss.mmm (no minutes part under a minute)
 function fmt(ms) {
   if (!ms || ms <= 0) return '-';
+  ms = Math.round(ms);
   const m = Math.floor(ms / 60000), s = Math.floor(ms % 60000 / 1000), t = ms % 1000;
   return (m ? m + ':' : '') + String(s).padStart(m ? 2 : 1, '0') + '.' + String(t).padStart(3, '0');
 }
-const sec = ms => (ms / 1000).toFixed(1) + ' s';
-const sum = list => (list || []).reduce((a, b) => a + b, 0);
+const gapStr = ms => '+' + fmt(ms);
+const secStr = ms => (ms / 1000).toFixed(3) + ' s';
+function mapName(slug) {
+  const s = String(slug);
+  if (s === 'unknown') return 'Map not recorded';
+  const known = MAP_NAMES.get(s.toLowerCase());
+  if (known) return known;
+  return s.replace(/_+/g, ' ').trim().toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase()) || 'Map not recorded';
+}
+const normAt = x => { x = posNum(x); return x > 1e11 ? Math.floor(x / 1000) : Math.floor(x); };   // seconds since 1970
+function ago(at) {
+  if (!at) return '-';
+  const s = Math.max(0, Date.now() / 1000 - at);
+  if (s < 45) return 'just now';
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  if (s < 30 * 86400) return Math.round(s / 86400) + ' d ago';
+  return new Date(at * 1000).toLocaleDateString([], { day:'numeric', month:'short', year:'numeric' });
+}
+const fullDate = at => at ? new Date(at * 1000).toLocaleString([], { weekday:'short', day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '';
+const relSpan = at => at ? `<span class="rel" data-at="${at}" title="${esc(fullDate(at))}">${esc(ago(at))}</span>` : '<span class="dim">-</span>';
+const typeLabel = t => t === 'standing' ? 'Standing start' : t === 'rolling' ? 'Rolling start' : 'Type not recorded (lap from before v0.27)';
+const typeTag = t => `<span class="tag" data-tip="${esc(typeLabel(t))}">${t === 'standing' ? 'S' : t === 'rolling' ? 'R' : '?'}</span>`;
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
-// one lap (standing / rolling / legacy) drawn as a row of bars, tallest = longest sector of that lap
-function lapBlock(title, lap, bestSectors) {
-  if (!lap || !lap.ms) return '';
-  const secs = lap.sectors || [], max = Math.max(...secs, 1);
-  const bars = secs.map((ms, i) => {
-    const best = bestSectors && bestSectors[i] && ms <= bestSectors[i];
-    // sectors differ in length (a 10 s straight next to a 4 s chicane), so slow is judged against the
-    // driver's own best for THAT sector, never against the lap's other sectors
-    const slow = bestSectors && bestSectors[i] && ms > bestSectors[i] * 1.5;
-    return `<div class="sec ${best ? 'best' : slow ? 'slow' : ''}" style="height:${Math.max(4, Math.round(60 * ms / max))}px">
-              <span>S${i + 1} ${sec(ms)}${best ? ' best' : ''}</span></div>`;
-  }).join('');
-  return `<div class="lap"><h3>${title} ${fmt(lap.ms)}</h3>
-    <div class="meta">${lap.car ? esc(lap.car) + ' · ' : ''}${lap.kph ? Math.round(lap.kph) + ' km/h at the line · ' : ''}${lap.resets || 0} reset${lap.resets === 1 ? '' : 's'} · ${secs.length} sectors</div>
-    <div class="sectors">${bars || '<span class="meta">no sector times saved for this lap</span>'}</div></div>`;
+/* chip button: label, optional count, which action it triggers, and the value it passes along */
+function chip(label, count, on, act, val, extra) {
+  return `<button class="chip${on ? ' on' : ''}${extra || ''}" data-act="${act}" data-v="${esc(val)}" aria-pressed="${on}">${esc(label)}${count != null && count !== '' ? ` <span class="n t">${esc(count)}</span>` : ''}</button>`;
 }
-function detail(e) {
-  const blocks = lapBlock('Standing', e.standing, e.bestSectors) + lapBlock('Rolling', e.rolling, e.bestSectors)
-               + lapBlock('Before 0.27 (type unknown)', e.legacy, e.bestSectors);
-  const ideal = e.bestSectors && e.bestSectors.length ? `<div class="lap"><h3>Ideal lap ${fmt(sum(e.bestSectors))}</h3>
-    <div class="meta">best sector times from any lap, added up · ${fmt(e.bestMs - sum(e.bestSectors))} left on the table</div></div>` : '';
-  return `<div class="laps">${blocks}${ideal}</div>${history(e)}
-    <div class="legend">hover a bar for the time<i style="background:var(--green)"></i>driver's best for that sector<i style="background:#7a4a1a"></i>1.5x slower than their best for that sector</div>`;
+function medalOf(ms, record) {                       // which medal tier a time earns against the record
+  if (!ms || !record) return null;
+  const r = ms / record;
+  return MEDALS.find(m => r <= m.max + 1e-9) || null;
 }
-// every counted lap, newest first (times.json keeps the last 50 per driver from v0.28; laps.log on the server keeps all)
-function history(e) {
-  const h = e.history || [];
-  if (!h.length) return '<div class="legend">lap history starts with the next lap (v0.28)</div>';
-  const when = s => s ? new Date(s * 1000).toLocaleString([], { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : '-';
-  const rows = h.map((l, i) => `<tr><td class="num">${h.length - i}</td><td>${when(l.at)}</td>
-      <td class="num ${l.ms === e.bestMs ? 'pb' : ''}" title="${(l.sectors || []).map((ms, j) => 'S' + (j + 1) + ' ' + sec(ms)).join('  ')}">${fmt(l.ms)}</td>
-      <td class="num gap">${l.ms === e.bestMs ? 'best' : '+' + fmt(l.ms - e.bestMs)}</td>
-      <td>${l.type === 'standing' ? 'standing' : 'rolling'}</td><td class="car">${l.car ? esc(l.car) : '-'}</td>
-      <td class="num">${l.kph ? Math.round(l.kph) : '-'}</td><td class="num">${l.resets || 0}</td></tr>`).join('');
-  return `<table class="hist"><caption>Lap history (${h.length}${h.length >= 50 ? ', last 50' : ''})</caption>
-    <thead><tr><th class="num">#</th><th>When</th><th class="num">Time</th><th class="num">To best</th><th>Type</th><th>Car</th>
-    <th class="num">km/h at line</th><th class="num">Resets</th></tr></thead><tbody>${rows}</tbody></table>`;
+const medalHTML = (m, ms, record) => m
+  ? `<span class="medal ${m.cls}" data-tip="${esc(m.name + ': within ' + Math.round((m.max - 1) * 100) + ' % of the record' + (ms > record ? ' (' + gapStr(ms - record) + ')' : ''))}">${m.letter}</span>`
+  : '';
+
+/* ======================= 3. READING times.json ======================= */
+// Turns the raw file into plain lists the page can use. Old and new server shapes both end up as:
+//   driver = { key, name, guest, history[], entries[], totalLaps }
+//   entry  = one driver on one map + car: { d, map, car, laps, best, standing, rolling }
+//   lap record (best/standing/rolling) = { ms, type, sectors[], kph, resets, at, car, map }
+const KNOWN_TYPES = new Set(['standing', 'rolling']);
+const lapType = t => KNOWN_TYPES.has(t) ? t : 'legacy';   // no type = a lap from before 0.27: "best" only
+const secs = a => Array.isArray(a) ? a.map(Number).filter(x => Number.isFinite(x) && x > 0) : [];   // {} or anything else = empty
+function mkRec(o, forceType) {
+  const ms = posNum(o && o.ms);
+  if (!ms) return null;
+  return { ms, type: forceType || lapType(o.type), sectors: secs(o.sectors), kph: posNum(o.kph), resets: posNum(o.resets), at: normAt(o.at) };
 }
-let open = null;                                           // key of the driver whose detail is open, kept across reloads
-async function load() {
-  const sub = document.getElementById('sub'), rows = document.getElementById('rows');
-  try {
-    const r = await fetch('times.json?t=' + Date.now(), { cache: 'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    // { "id:123": { name, car, bestMs, bestType, sectors, kph, resets, laps, bestStandingMs, bestRollingMs,
-    //               standing = {ms, sectors, kph, resets, car}, rolling = {...}, legacy = {...}, bestSectors = [...] }, ... }
-    // bestMs is the better of the laps; a key with no name is a guest, and the key IS the name
-    const board = await r.json();
-    const list = Object.entries(board).filter(([k, e]) => e && e.bestMs > 0)
-      .map(([k, e]) => ({ ...e, key: k, name: e.name && e.name !== '?' ? e.name : k }))
-      .sort((a, b) => a.bestMs - b.bestMs);
-    const top = list.length ? list[0].bestMs : 0, showPts = list.length >= POINTS_MIN_DRIVERS;
-    const typeTag = { standing: 'S', rolling: 'R', legacy: '?' };
-    rows.innerHTML = list.map((e, i) => {
-      const ideal = e.bestSectors && e.bestSectors.length ? sum(e.bestSectors) : 0;
-      return `<tr class="row ${i === 0 ? 'top' : ''}" data-key="${esc(e.key)}">
-      <td class="num">${i + 1}</td><td>${esc(e.name)}</td><td class="car">${e.car ? esc(e.car) : '-'}</td>
-      <td class="num">${fmt(e.bestMs)}<span class="tag">${typeTag[e.bestType] || ''}</span></td>
-      <td class="num gap">${i === 0 ? '' : '+' + fmt(e.bestMs - top)}</td>
-      <td class="num">${fmt(e.bestStandingMs)}</td><td class="num">${fmt(e.bestRollingMs)}</td>
-      <td class="num">${fmt(ideal)}</td>
-      <td class="num">${e.laps || 0}</td>
-      <td class="num">${e.kph ? Math.round(e.kph) : '-'}</td><td class="num">${e.resets || 0}</td>
-      <td class="num">${showPts ? Math.floor(100 * top / e.bestMs) : '-'}</td></tr>
-      <tr class="detail" data-for="${esc(e.key)}" ${open === e.key ? '' : 'hidden'}><td colspan="12">${open === e.key ? detail(e) : ''}</td></tr>`;
-    }).join('');
-    rows.querySelectorAll('tr.row').forEach(tr => tr.onclick = () => {
-      const k = tr.dataset.key, d = rows.querySelector(`tr.detail[data-for="${CSS.escape(k)}"]`);
-      if (open === k) { open = null; d.hidden = true; d.firstElementChild.innerHTML = ''; return; }
-      rows.querySelectorAll('tr.detail').forEach(x => { x.hidden = true; x.firstElementChild.innerHTML = ''; });
-      open = k; d.firstElementChild.innerHTML = detail(list.find(e => e.key === k)); d.hidden = false;
+const faster = (...recs) => recs.filter(Boolean).reduce((a, b) => (!a || b.ms < a.ms) ? b : a, null);
+
+function normalize(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('times.json is not a JSON object');
+  const meta = raw._meta && typeof raw._meta === 'object' ? raw._meta : {};
+  const defMap = typeof meta.map === 'string' && meta.map ? meta.map : 'unknown';
+  const drivers = [];
+
+  for (const [key, e] of Object.entries(raw)) {
+    if (key[0] === '_' || !e || typeof e !== 'object' || Array.isArray(e)) continue;
+    const d = { key, name: e.name && e.name !== '?' ? String(e.name) : key, guest: !key.startsWith('id:'), history: [], entries: [], totalLaps: 0, oldSectors: [] };
+
+    // history: every counted lap, newest first as written (sorted again where it matters)
+    (Array.isArray(e.history) ? e.history : []).forEach((l, i) => {
+      const ms = posNum(l && l.ms);
+      if (!ms) return;
+      d.history.push({ ms, type: lapType(l.type), car: String(l.car || e.car || 'Unknown car'), map: String(l.map || defMap),
+                       kph: posNum(l.kph), resets: posNum(l.resets), at: normAt(l.at), sectors: secs(l.sectors), idx: i, d });
     });
-    sub.textContent = list.length + ' driver' + (list.length === 1 ? '' : 's') + ' · updated ' + new Date().toLocaleTimeString()
-      + (showPts ? '' : ' · points show once ' + POINTS_MIN_DRIVERS + ' drivers have a time');
-  } catch (err) {
-    sub.innerHTML = '<span class="err">could not read times.json: ' + esc(err.message) + '</span>';
+
+    // entries: the permanent best per map + car
+    function addEntry(map, car, laps, best, standing, rolling) {
+      if (!standing && best && best.type === 'standing') standing = best;   // "best" was a standing lap
+      if (!rolling && best && best.type === 'rolling') rolling = best;
+      best = faster(best, standing, rolling);                                // legacy laps only ever appear as "best"
+      if (!best) return;
+      for (const r of [best, standing, rolling]) if (r) { r.car = car; r.map = map; }
+      d.entries.push({ d, map, car, laps: posNum(laps), best, standing, rolling });
+    }
+    const hasBests = e.bests && typeof e.bests === 'object' && !Array.isArray(e.bests) && Object.keys(e.bests).length > 0;
+    d.hasBests = hasBests;
+    if (hasBests) {
+      for (const [k, b] of Object.entries(e.bests)) {
+        if (!b || typeof b !== 'object') continue;
+        const i = k.indexOf('|');
+        addEntry(String(b.map || (i >= 0 ? k.slice(0, i) : defMap)), String(b.car || (i >= 0 ? k.slice(i + 1) : 'Unknown car')),
+                 b.laps, mkRec(b.best), mkRec(b.standing, 'standing'), mkRec(b.rolling, 'rolling'));
+      }
+      d.totalLaps = sum(d.entries.map(x => x.laps));
+    } else {
+      // older server (v0.27 / v0.28): map = _meta.map, car = the driver's one car, laps from the summary fields
+      const car = e.car ? String(e.car) : 'Unknown car';
+      const standing = mkRec(e.standing, 'standing'), rolling = mkRec(e.rolling, 'rolling'), legacy = mkRec(e.legacy);
+      let best = faster(standing, rolling, legacy);
+      if (!best && posNum(e.bestMs)) best = mkRec({ ms:e.bestMs, type:e.bestType, sectors:e.sectors, kph:e.kph, resets:e.resets });
+      addEntry(defMap, car, e.laps, best, standing, rolling);
+      d.totalLaps = posNum(e.laps);
+      d.oldSectors = secs(e.bestSectors);       // best time in every sector from any lap (used for the ideal lap)
+    }
+    if (d.entries.length || d.history.length) drivers.push(d);
+  }
+  return buildModel(meta, drivers);
+}
+
+function buildModel(meta, drivers) {
+  const mm = new Map();                                    // map slug -> counts
+  const touch = slug => { if (!mm.has(slug)) mm.set(slug, { slug, bestLaps:0, histRows:0, newest:0 }); return mm.get(slug); };
+  let newestAt = 0;
+  for (const d of drivers) {
+    for (const en of d.entries) {
+      const m = touch(en.map); m.bestLaps += en.laps;
+      for (const r of [en.best, en.standing, en.rolling]) if (r) { m.newest = Math.max(m.newest, r.at); newestAt = Math.max(newestAt, r.at); }
+    }
+    for (const r of d.history) { const m = touch(r.map); m.histRows++; m.newest = Math.max(m.newest, r.at); newestAt = Math.max(newestAt, r.at); }
+  }
+  const maps = [...mm.values()].map(m => ({ ...m, laps: Math.max(m.bestLaps, m.histRows) }))
+    .sort((a, b) => b.laps - a.laps || a.slug.localeCompare(b.slug));
+  let defaultMap = '';
+  if (meta.map && mm.has(String(meta.map))) defaultMap = String(meta.map);
+  else if (maps.length) defaultMap = maps.slice().sort((a, b) => b.newest - a.newest || b.laps - a.laps)[0].slug;
+  const byKey = new Map(drivers.map(d => [d.key, d]));
+  const model = { meta, drivers, byKey, maps, defaultMap, newestAt, records:new Map() };
+  for (const d of drivers) for (const en of d.entries) {           // record per map+car (type "best")
+    const k = en.map + '|' + en.car, cur = model.records.get(k);
+    if (!cur || en.best.ms < cur) model.records.set(k, en.best.ms);
+  }
+  flagLaps(model);
+  return model;
+}
+
+// PB / RECORD flags for every history row. Walk the rows oldest first:
+//   PB     = faster than every earlier lap of that driver on that map + car
+//   RECORD = faster than every earlier lap of anybody on that map + car
+// History keeps only the last 100 laps, so when a combo has more laps than rows, its oldest row is only
+// trusted if it equals the permanent best (otherwise we cannot know if it was a PB).
+function flagLaps(model) {
+  const oldestFirst = (a, b) => a.at - b.at || b.idx - a.idx;
+  const combos = new Map();                                // "map|car" -> { rows[], laps, perm }
+  for (const d of model.drivers) for (const r of d.history) {
+    const k = r.map + '|' + r.car;
+    if (!combos.has(k)) combos.set(k, { rows:[], laps:0, perm:model.records.get(k) || Infinity });
+    combos.get(k).rows.push(r);
+    r.pb = false; r.rec = false;
+  }
+  for (const d of model.drivers) for (const en of d.entries) { const c = combos.get(en.map + '|' + en.car); if (c) c.laps += en.laps; }
+  for (const c of combos.values()) {
+    const truncated = c.laps > c.rows.length;
+    const walk = (rows, flag, perm) => {
+      rows.sort(oldestFirst);
+      let run = Infinity;
+      rows.forEach((r, i) => { if (r.ms < run) { r[flag] = i > 0 || !truncated || r.ms <= perm; run = r.ms; } });
+    };
+    walk(c.rows.slice(), 'rec', c.perm);                    // slice: sorting must not reorder the shared rows
+    const byDriver = new Map();
+    for (const r of c.rows) { if (!byDriver.has(r.d)) byDriver.set(r.d, []); byDriver.get(r.d).push(r); }
+    for (const [d, rows] of byDriver) {
+      const en = d.entries.find(x => x.map === rows[0].map && x.car === rows[0].car);
+      const trunc = en ? en.laps > rows.length : false;
+      rows.sort(oldestFirst);
+      let run = Infinity;
+      rows.forEach((r, i) => { if (r.ms < run) { r.pb = i > 0 || !trunc || (en && r.ms <= en.best.ms); run = r.ms; } });
+    }
   }
 }
-load(); setInterval(load, 30000);
+
+/* ======================= 4. CALCULATIONS (what the views show) ======================= */
+let M = null;                                              // the current model (null until the first good load)
+const state = { map:'', tab:'board', car:'', type:'best', driver:'', q:'', recentN:PAGE_SIZE };
+const pstate = { key:'', car:'', type:'all', sort:'new' };  // filters inside the driver panel
+
+const curMap = () => M && M.maps.some(m => m.slug === state.map) ? state.map : (M ? M.defaultMap : '');
+function carList(map, type) {                              // every car driven on this map, best lap first
+  const cars = new Map();
+  for (const d of M.drivers) for (const en of d.entries) {
+    if (en.map !== map) continue;
+    if (!cars.has(en.car)) cars.set(en.car, { car:en.car, drivers:new Set(), withType:new Set(), laps:0, rec:null, holder:null });
+    const c = cars.get(en.car);
+    c.drivers.add(d.key); c.laps += en.laps;
+    const r = en[type];
+    if (r) { c.withType.add(d.key); if (!c.rec || r.ms < c.rec.ms) { c.rec = r; c.holder = d; } }
+  }
+  return [...cars.values()];
+}
+const curCar = (map, type) => state.car && carList(map, type).some(c => c.car === state.car) ? state.car : '';
+function boardRows(map, car, type) {                       // one row per driver: their best lap under the filter
+  const rows = [];
+  for (const d of M.drivers) {
+    let pick = null, laps = 0;
+    for (const en of d.entries) {
+      if (en.map !== map || (car && en.car !== car)) continue;
+      laps += en.laps;
+      const r = en[type];
+      if (r && (!pick || r.ms < pick.rec.ms || (r.ms === pick.rec.ms && r.at < pick.rec.at))) pick = { rec:r, en };
+    }
+    if (pick) rows.push({ d, en:pick.en, rec:pick.rec, car:pick.en.car, laps });
+  }
+  rows.sort((a, b) => a.rec.ms - b.rec.ms || (a.rec.at || 1e12) - (b.rec.at || 1e12) || a.d.name.localeCompare(b.d.name));
+  const top = rows.length ? rows[0].rec.ms : 0;
+  rows.forEach((r, i) => {
+    r.rank = i + 1; r.gap = r.rec.ms - top; r.int = i ? r.rec.ms - rows[i - 1].rec.ms : 0;
+    r.medal = medalOf(r.rec.ms, top); r.pts = Math.floor(100 * top / r.rec.ms);
+  });
+  return rows;
+}
+// fastest sector of everyone shown, who owns it, and the ideal lap (their sum)
+function boardInfo(rows) {
+  const n = Math.max(0, ...rows.map(r => r.rec.sectors.length));
+  const fast = [], owner = [];
+  for (let i = 0; i < n; i++) {
+    let f = 0, o = null;
+    for (const r of rows) { const s = r.rec.sectors[i]; if (s > 0 && (!f || s < f)) { f = s; o = r.d; } }
+    fast.push(f); owner.push(o);
+  }
+  const complete = n > 0 && fast.every(x => x > 0);
+  return { fast, owner, ideal: complete ? sum(fast) : 0 };
+}
+// map "newest first" rows for the Recent laps tab
+function recentRows(map) {
+  const out = [];
+  for (const d of M.drivers) for (const r of d.history) if (r.map === map) out.push(r);
+  return out.sort((a, b) => b.at - a.at || a.idx - b.idx);
+}
+
+/* ======================= 5. URL HASH ======================= */
+// #map=utah&tab=cars&car=ETK%20800&type=standing&driver=id:775254   (the back button works: every change is a history step)
+const TAB_IDS = TABS.map(t => t[0]);
+function parseHash() {
+  const p = new URLSearchParams(location.hash.replace(/^#/, ''));
+  state.map = p.get('map') || '';
+  state.tab = TAB_IDS.includes(p.get('tab')) ? p.get('tab') : 'board';
+  state.car = p.get('car') || '';
+  state.type = TYPES.some(t => t[0] === p.get('type')) ? p.get('type') : 'best';
+  state.driver = p.get('driver') || '';
+}
+function toHash(s) {
+  const p = new URLSearchParams();
+  if (s.map) p.set('map', s.map);
+  p.set('tab', s.tab);
+  if (s.car) p.set('car', s.car);
+  if (s.type !== 'best') p.set('type', s.type);
+  if (s.driver) p.set('driver', s.driver);
+  return '#' + p.toString();
+}
+let pushedProfile = false;                                 // did we open the panel ourselves? (then "close" = back)
+function nav(patch, replace) {
+  const next = { ...state, map:curMap(), ...patch };
+  if (patch.map && patch.map !== state.map && patch.car === undefined) next.car = '';   // a car belongs to one map
+  if (patch.map || patch.tab) state.recentN = PAGE_SIZE;               // the Recent laps list starts at one page again
+  if (patch.driver && !state.driver) pushedProfile = !replace;
+  const h = toHash(next);
+  if (replace) { history.replaceState(null, '', h); parseHash(); render(); }
+  else if (location.hash === h) { parseHash(); render(); }
+  else location.hash = h;                                  // hashchange then redraws
+}
+function closeProfile() {
+  if (!state.driver) return;
+  if (pushedProfile) { pushedProfile = false; history.back(); } else nav({ driver:'' }, true);
+}
+
+/* ======================= 6. DRAWING THE PAGE ======================= */
+let lastOk = null, errText = '';
+let seen = null, fresh = new Set(), freshTimer = 0;       // lap ids: new ones since the last refresh get highlighted
+const lapId = (key, map, car, at, ms) => [key, map, car, at, ms].join('|');
+const isFresh = (key, map, car, at, ms) => fresh.size && fresh.has(lapId(key, map, car, at, ms)) ? ' fresh' : '';
+
+function renderTop() {
+  const live = $('live');
+  if (!M) { live.innerHTML = ''; }
+  else if (M.newestAt && Date.now() / 1000 - M.newestAt < LIVE_MINUTES * 60) live.innerHTML = '<span class="pill live"><i></i>LIVE</span>';
+  else live.innerHTML = `<span class="pill">${M.newestAt ? 'last lap ' + esc(ago(M.newestAt)) : M.maps.length ? 'last lap time unknown' : 'no laps yet'}</span>`;
+  $('upd').textContent = lastOk ? 'updated ' + lastOk.toLocaleTimeString('en-GB') : '';
+  const err = $('err');
+  err.hidden = !errText;
+  err.textContent = errText;
+}
+function renderMaps() {
+  const box = $('maps'), cur = curMap();
+  box.hidden = !M || !M.maps.length;
+  box.innerHTML = M ? M.maps.map(m => chip(mapName(m.slug), m.laps > 0 ? m.laps : '', m.slug === cur, 'map', m.slug)).join('') : '';
+}
+function renderTabs() {
+  $('tabs').innerHTML = M ? TABS.map(([id, label]) =>
+    `<button class="tab${state.tab === id ? ' on' : ''}" role="tab" aria-selected="${state.tab === id}" data-act="tab" data-v="${id}">${label}</button>`).join('') : '';
+}
+
+/* --- Leaderboard tab --- */
+function viewBoard(map) {
+  const type = state.type, car = curCar(map, type);
+  const cars = carList(map, type).sort((a, b) => b.withType.size - a.withType.size || a.car.localeCompare(b.car));
+  const all = boardRows(map, '', type);
+  const rows = boardRows(map, car, type);
+  const typeChips = TYPES.map(([id, label]) => chip(label, null, id === type, 'type', id)).join('');
+  const carChips = chip('All cars', all.length, !car, 'car', '') +
+    cars.map(c => chip(c.car, c.withType.size, c.car === car, 'car', c.car, c.withType.size ? '' : ' zero')).join('');
+  const filters = `<div class="filters">
+      <div class="frow"><span class="fl">Car</span><div class="chips scroll">${carChips}</div></div>
+      <div class="frow"><span class="fl">Type</span><div class="chips scroll">${typeChips}</div>
+        <input class="search" id="q" type="search" placeholder="Find a driver" aria-label="Find a driver" autocomplete="off"></div>
+    </div>`;
+  if (!rows.length) return filters + `<div class="empty box">Nobody has a ${type === 'best' ? '' : type + ' '}lap${car ? ' in ' + esc(car) : ''} on ${esc(mapName(map))} yet.</div>`;
+  const info = boardInfo(rows);
+  return filters + podiumHTML(rows) + `<div id="lbTable">${boardTable(rows, info)}</div>` + idealHTML(rows, info) + footHTML();
+}
+function podiumHTML(rows) {
+  const top3 = rows.slice(0, 3), showPts = rows.length >= POINTS_MIN_DRIVERS;
+  const cards = top3.map(r => `<div class="pcard p${r.rank}${isFresh(r.d.key, r.en.map, r.en.car, r.rec.at, r.rec.ms)}">
+      <div class="pp">P${r.rank}${showPts ? ` <span class="dim">&middot; ${r.pts} pts</span>` : ''}</div>
+      <button class="pname lnk" data-act="driver" data-v="${esc(r.d.key)}" title="${esc(r.d.name)}">${esc(r.d.name)}</button>
+      <div class="ptime t">${fmt(r.rec.ms)}${typeTag(r.rec.type)}</div>
+      <div class="pmeta"><span class="car">${esc(r.car)}</span><span class="t">${r.rank === 1 ? 'Record' : gapStr(r.gap)}</span>${medalHTML(r.medal, r.rec.ms, rows[0].rec.ms)}</div>
+    </div>`).join('');
+  return `<div class="podium n${top3.length}">${cards}</div>`;
+}
+function boardTable(rows, info) {
+  const q = state.q.trim().toLowerCase();
+  const shown = q ? rows.filter(r => r.d.name.toLowerCase().includes(q)) : rows;
+  const showPts = rows.length >= POINTS_MIN_DRIVERS, top = rows[0].rec.ms;
+  if (!shown.length) return '<div class="empty box">No driver matches that name.</div>';
+  const body = shown.map(r => {
+    const strip = r.rec.sectors.map((ms, i) => {
+      const purple = info.fast[i] && ms === info.fast[i];
+      return `<i class="sb${purple ? ' p' : ''}" data-tip="${esc('S' + (i + 1) + '  ' + secStr(ms) + (purple ? '  fastest shown' : ''))}"></i>`;
+    }).join('');
+    return `<tr class="${isFresh(r.d.key, r.en.map, r.en.car, r.rec.at, r.rec.ms).trim()}">
+      <td class="c-pos"><span class="pos${r.rank <= 3 ? ' m' + r.rank : ''}">${r.rank}</span></td>
+      <td class="c-drv"><span class="posm">${r.rank}</span><button class="lnk" data-act="driver" data-v="${esc(r.d.key)}" title="${esc(r.d.name)}">${esc(r.d.name)}</button></td>
+      <td class="c-car car">${esc(r.car)}</td>
+      <td class="c-time t ${r.rank === 1 ? 'pu' : ''}"><b>${fmt(r.rec.ms)}</b>${typeTag(r.rec.type)}</td>
+      <td class="c-gap r t dim" data-l="">${r.rank === 1 ? 'Record' : gapStr(r.gap)}</td>
+      <td class="c-int r t dim" data-l="Interval">${r.rank === 1 ? '-' : gapStr(r.int)}</td>
+      <td class="c-sec">${strip ? `<div class="strip" aria-label="Sector times">${strip}</div>` : '<span class="dim">no sectors</span>'}</td>
+      <td class="c-kph r t" data-l="km/h">${r.rec.kph ? Math.round(r.rec.kph) : '-'}</td>
+      <td class="c-laps r t" data-l="Laps">${lapsStr(r.laps)}</td>
+      <td class="c-medal" data-l="Medal">${medalHTML(r.medal, r.rec.ms, top) || '<span class="dim">-</span>'}</td>
+      <td class="c-pts r t" data-l="Points">${showPts ? r.pts : '-'}</td></tr>`;
+  }).join('');
+  return `<div class="box cardbox"><table class="tb cardy lb"><thead><tr>
+      <th class="r">Pos</th><th>Driver</th><th>Car</th><th>Time</th><th class="r">Gap</th><th class="r">Interval</th>
+      <th>Sectors</th><th class="r">km/h</th><th class="r">Laps</th><th>Medal</th><th class="r">Points</th>
+    </tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function idealHTML(rows, info) {
+  if (!info.ideal) return '';
+  const record = rows[0].rec.ms;
+  const owners = new Map();                                  // driver -> [sector numbers]
+  info.owner.forEach((d, i) => { if (!owners.has(d)) owners.set(d, []); owners.get(d).push('S' + (i + 1)); });
+  const list = [...owners].sort((a, b) => b[1].length - a[1].length)
+    .map(([d, s]) => `<b>${esc(d.name)}</b> ${esc(s.join(' '))}`).join(' &middot; ');
+  return `<div class="ideal"><div class="dim" style="font:600 12px var(--head);text-transform:uppercase;letter-spacing:.07em">Ideal lap of the board</div>
+    <div class="big t">${fmt(info.ideal)} <span class="dim" style="font-size:14px;font-weight:400">${info.ideal < record ? fmt(record - info.ideal) + ' quicker than the record' : ''}</span></div>
+    <div class="small">The fastest sector of every driver shown, added up. Owners: ${list}</div></div>`;
+}
+const footHTML = () => `<div class="foot">
+    <i style="background:var(--purple)"></i>fastest of everyone shown <i style="background:var(--green)"></i>the driver's own best <i style="background:var(--yellow)"></i>slower than their best<br>
+    Medals compare a time with the record for the chosen map and car: Gold within 2 %, Silver within 5 %, Bronze within 10 %.
+    Points = floor(100 &times; record &divide; your time), shown once ${POINTS_MIN_DRIVERS} drivers have a time.
+    S = standing start (from the honk), R = rolling (over the line at speed), ? = type not recorded.</div>`;
+
+/* --- Cars tab --- */
+function viewCars(map) {
+  const type = state.type;
+  const cars = carList(map, type).filter(c => c.rec).sort((a, b) => a.rec.ms - b.rec.ms);
+  const typeChips = TYPES.map(([id, label]) => chip(label, null, id === type, 'type', id)).join('');
+  const filters = `<div class="filters"><div class="frow"><span class="fl">Type</span><div class="chips scroll">${typeChips}</div></div></div>`;
+  if (!cars.length) return filters + `<div class="empty box">No ${type === 'best' ? '' : type + ' '}laps on ${esc(mapName(map))} yet.</div>`;
+  const fastest = cars[0].rec.ms;
+  const body = cars.map((c, i) => `<tr class="click" data-act="carrow" data-v="${esc(c.car)}" title="Show this car on the leaderboard">
+      <td class="c-pos"><span class="pos${i < 3 ? ' m' + (i + 1) : ''}">${i + 1}</span></td>
+      <td class="c-car car"><span class="posm">${i + 1}</span>${esc(c.car)}</td>
+      <td class="c-time t ${i === 0 ? 'pu' : ''}"><b>${fmt(c.rec.ms)}</b>${typeTag(c.rec.type)}</td>
+      <td class="c-hold" data-l="Record holder"><button class="lnk" data-act="driver" data-v="${esc(c.holder.key)}">${esc(c.holder.name)}</button></td>
+      <td class="c-nd r t" data-l="Drivers">${c.drivers.size}</td>
+      <td class="c-laps r t" data-l="Laps">${lapsStr(c.laps)}</td>
+      <td class="c-gap r t dim" data-l="">${i === 0 ? 'Fastest car' : gapStr(c.rec.ms - fastest)}</td></tr>`).join('');
+  return filters + `<div class="box cardbox"><table class="tb cardy cr"><thead><tr>
+      <th class="r">#</th><th>Car</th><th>Record lap</th><th>Record holder</th><th class="r">Drivers</th><th class="r">Laps</th><th class="r">Gap to fastest car</th>
+    </tr></thead><tbody>${body}</tbody></table></div>
+    <div class="foot">Every car driven on ${esc(mapName(map))}, ranked by its record lap. Click a car to see its leaderboard.</div>`;
+}
+
+/* --- Recent laps tab --- */
+function viewRecent(map) {
+  const rows = recentRows(map);
+  if (!rows.length) return `<div class="empty box">No lap history on ${esc(mapName(map))} yet. Laps appear here as they are driven.</div>`;
+  const n = Math.min(state.recentN, rows.length);
+  const body = rows.slice(0, n).map(r => `<tr class="${isFresh(r.d.key, r.map, r.car, r.at, r.ms).trim()}">
+      <td class="c-when">${relSpan(r.at)}</td>
+      <td class="c-drv"><button class="lnk" data-act="driver" data-v="${esc(r.d.key)}" title="${esc(r.d.name)}">${esc(r.d.name)}</button></td>
+      <td class="c-car car">${esc(r.car)}</td>
+      <td class="c-time t ${r.rec ? 'pu' : ''}"><b>${fmt(r.ms)}</b></td>
+      <td class="c-badge">${r.rec ? '<span class="bdg rc" data-tip="Fastest lap on this map and car at that moment">RECORD</span>' : r.pb ? '<span class="bdg pb" data-tip="Their best on this map and car at that moment">PB</span>' : ''}</td>
+      <td class="c-type">${typeTag(r.type)} <span class="dim">${r.type === 'standing' ? 'standing' : r.type === 'rolling' ? 'rolling' : 'type unknown'}</span></td></tr>`).join('');
+  return `<div class="box cardbox"><table class="tb cardy rc"><thead><tr>
+      <th>When</th><th>Driver</th><th>Car</th><th>Time</th><th>&nbsp;</th><th>Type</th>
+    </tr></thead><tbody>${body}</tbody></table></div>
+    ${n < rows.length ? `<button class="more" data-act="more">Show more (${rows.length - n} older)</button>` : ''}
+    <div class="foot">Showing ${n} of ${rows.length} laps on ${esc(mapName(map))}, newest first. Each driver's history keeps their last 100 laps.
+      <span class="bdg pb">PB</span> was their best on that map and car at the time. <span class="bdg rc">RECORD</span> was the fastest of anybody (a record is also a PB).</div>`;
+}
+
+/* --- the whole page --- */
+function render() {
+  if (!M) { renderTop(); return; }
+  const map = curMap();
+  renderTop(); renderMaps(); renderTabs();
+  const view = $('view'), ae = document.activeElement;
+  const hadSearch = ae && ae.id === 'q', caret = hadSearch ? ae.selectionStart : 0;
+  const key = ae && ae.dataset && ae.dataset.act && !ae.closest('#drawerRoot') ? [ae.dataset.act, ae.dataset.v] : null;
+  if (!M.maps.length) view.innerHTML = '<div class="empty box">No laps yet. Drive a lap with kkLap running and it will show up here within 30 seconds.</div>';
+  else view.innerHTML = state.tab === 'cars' ? viewCars(map) : state.tab === 'recent' ? viewRecent(map) : viewBoard(map);
+  const q = $('q');
+  if (q) { q.value = state.q; if (hadSearch) { q.focus(); q.setSelectionRange(caret, caret); } }
+  if (key && !hadSearch) { const again = [...document.querySelectorAll('[data-act]')].find(x => x.dataset.act === key[0] && x.dataset.v === key[1]); if (again && !again.closest('#drawerRoot')) again.focus({ preventScroll:true }); }
+  renderDrawer();
+}
+
+/* ======================= 7. THE LAP-TIME CHART (inline SVG) ======================= */
+// x = lap order (oldest left), y = lap time (lower is faster). Green dots = a PB when it was set,
+// purple dots = a record when it was set, dashed green line = the driver's best.
+const NS = 'http://www.w3.org/2000/svg';
+function axisTime(ms, step) {                               // 1:59 or 1:59.5 when the ticks are under a second apart
+  const m = Math.floor(ms / 60000), s = (ms % 60000) / 1000, dec = step < 1000 ? 1 : 0;
+  const ss = s.toFixed(dec);
+  return m ? m + ':' + ss.padStart(dec ? 4 : 2, '0') : ss;
+}
+function niceStep(range, want) {
+  const steps = [250, 500, 1000, 2000, 2500, 5000, 10000, 15000, 20000, 30000, 60000, 120000, 300000, 600000];
+  return steps.find(s => range / s <= want) || steps[steps.length - 1];
+}
+function drawChart(box, pts, bestMs) {
+  const w = Math.max(280, box.clientWidth - 12), h = w < 520 ? 215 : 255;
+  const ml = 50, mr = 14, mt = 14, mb = 28, pw = w - ml - mr, ph = h - mt - mb;
+  const msAll = pts.map(p => p.ms).sort((a, b) => a - b);
+  const lo0 = Math.min(msAll[0], bestMs || Infinity), med = msAll[Math.floor(msAll.length / 2)];
+  // a spin or a 4-minute crash would squash the chart flat: cap the scale and draw those laps as a triangle at the top
+  let hi0 = Math.min(msAll[msAll.length - 1], Math.max(lo0 * 1.12, med * 1.35));
+  if (hi0 - lo0 < 1500) hi0 = lo0 + 1500;
+  const pad = (hi0 - lo0) * 0.1, lo = Math.max(0, lo0 - pad), hi = hi0 + pad;
+  const step = niceStep(hi - lo, 4);
+  const y = ms => mt + ph - (Math.min(ms, hi) - lo) / (hi - lo) * ph;
+  const n = pts.length, x = i => ml + (n === 1 ? pw / 2 : i * pw / (n - 1));
+  let g = '';
+  for (let t = Math.ceil(lo / step) * step; t <= hi; t += step)
+    g += `<line class="ch-grid" x1="${ml}" x2="${w - mr}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}"/><text class="ch-txt" x="${ml - 8}" y="${(y(t) + 4).toFixed(1)}" text-anchor="end">${axisTime(t, step)}</text>`;
+  const xs = [1, 2, 5, 10, 20, 25, 50].find(s => n / s <= 7) || 50;
+  for (let i = 0; i < n; i += xs) g += `<text class="ch-txt" x="${x(i).toFixed(1)}" y="${h - 8}" text-anchor="middle">${i + 1}</text>`;
+  if ((n - 1) % xs >= xs / 2) g += `<text class="ch-txt" x="${x(n - 1).toFixed(1)}" y="${h - 8}" text-anchor="middle">${n}</text>`;
+  const bestY = bestMs ? y(bestMs) : null;
+  const best = bestY == null ? '' : `<line class="ch-best" x1="${ml}" x2="${w - mr}" y1="${bestY.toFixed(1)}" y2="${bestY.toFixed(1)}"/>`;
+  const path = pts.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.ms).toFixed(1)).join(' ');
+  const dots = pts.map((p, i) => {
+    const cx = x(i).toFixed(1), cy = y(p.ms).toFixed(1);
+    if (p.ms > hi) return `<path d="M${cx} ${(mt + 1).toFixed(1)} l5 9 h-10 z" fill="var(--yellow)" class="ch-pt"/>`;
+    if (p.rec) return `<circle class="ch-pt" cx="${cx}" cy="${cy}" r="5" fill="var(--purple)"/>`;
+    if (p.pb) return `<circle class="ch-pt" cx="${cx}" cy="${cy}" r="5" fill="var(--green)"/>`;
+    return i === n - 1 ? `<circle class="ch-pt" cx="${cx}" cy="${cy}" r="4.5" fill="var(--amber)"/>` : '';
+  }).join('');
+  const label = `Lap times, ${n} laps, oldest to newest. Best ${fmt(bestMs || msAll[0])}, slowest ${fmt(msAll[n - 1])}.`;
+  box.innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="${esc(label)}" tabindex="0">
+      ${g}<line class="ch-axis" x1="${ml}" x2="${w - mr}" y1="${mt + ph}" y2="${mt + ph}"/>${best}
+      <path class="ch-line" d="${path}"/>${dots}
+      <g class="hov" display="none"><line class="ch-cross" y1="${mt}" y2="${mt + ph}"/><circle class="ch-pt" r="6" fill="var(--amber)"/></g>
+      <rect class="hit" x="${ml - 6}" y="${mt}" width="${pw + 12}" height="${ph}" fill="transparent"/></svg>`;
+  const svg = box.firstElementChild, hov = svg.querySelector('.hov'), cross = hov.firstElementChild, ring = hov.lastElementChild;
+  let tip = null, cur = -1;
+  function show(i) {                                        // crosshair + tooltip on lap i (the nearest lap, never the exact pixel)
+    i = Math.max(0, Math.min(n - 1, i)); cur = i;
+    const p = pts[i], px = x(i), py = y(p.ms);
+    hov.removeAttribute('display'); cross.setAttribute('x1', px); cross.setAttribute('x2', px); ring.setAttribute('cx', px); ring.setAttribute('cy', py);
+    if (tip) tip.remove();
+    tip = el('div', 'ctip');
+    tip.appendChild(el('div', 'cv', fmt(p.ms) + (p.rec ? '  RECORD' : p.pb ? '  PB' : '')));
+    tip.appendChild(el('span', 'cs', 'Lap ' + (i + 1) + ' of ' + n + ' - ' + p.car));
+    tip.appendChild(el('span', 'cs', (p.type === 'legacy' ? 'type not recorded' : p.type) + (bestMs && p.ms > bestMs ? ' - ' + gapStr(p.ms - bestMs) + ' to best' : '')));
+    if (p.at) tip.appendChild(el('span', 'cs', ago(p.at)));
+    box.appendChild(tip);
+    const tw = tip.offsetWidth, left = px + 14 + tw > box.clientWidth ? px - tw - 10 : px + 14;
+    tip.style.left = Math.max(4, left) + 'px'; tip.style.top = Math.max(4, Math.min(py - 20, box.clientHeight - tip.offsetHeight - 40)) + 'px';
+  }
+  function hide() { hov.setAttribute('display', 'none'); if (tip) { tip.remove(); tip = null; } cur = -1; }
+  const near = e => { const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * (w / r.width); return n === 1 ? 0 : Math.round((px - ml) / pw * (n - 1)); };
+  const hit = svg.querySelector('.hit');
+  hit.addEventListener('pointermove', e => show(near(e)));
+  hit.addEventListener('pointerdown', e => show(near(e)));
+  hit.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') hide(); });
+  svg.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft') { show(cur < 0 ? n - 1 : cur - 1); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { show(cur < 0 ? 0 : cur + 1); e.preventDefault(); }
+    else if (e.key === 'Escape' && cur >= 0) { hide(); e.stopPropagation(); }
+  });
+  svg.addEventListener('blur', hide);
+}
+
+/* ======================= 8. THE DRIVER PANEL ("sub menu") ======================= */
+let drawerShown = '';                                      // key of the driver currently drawn in the panel
+let chartArgs = null, chartObserver = null;
+function stats(rows) {                                     // numbers for the stat tiles
+  const last = rows.slice().sort((a, b) => b.at - a.at || a.idx - b.idx).slice(0, 10).map(r => r.ms);
+  let sd = null;
+  if (last.length >= 3) { const mean = sum(last) / last.length; sd = Math.sqrt(sum(last.map(v => (v - mean) ** 2)) / last.length); }
+  return { sd, avg: rows.length ? sum(rows.map(r => r.ms)) / rows.length : 0 };
+}
+function bestSectors(sets) {                               // fastest time in every sector across the given laps
+  const counts = new Map();
+  for (const s of sets) if (s.length) counts.set(s.length, (counts.get(s.length) || 0) + 1);
+  if (!counts.size) return [];
+  const n = [...counts].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];       // the usual number of sectors
+  const best = Array(n).fill(0);
+  for (const s of sets) if (s.length === n) s.forEach((v, i) => { if (!best[i] || v < best[i]) best[i] = v; });
+  return best;
+}
+function profile(d) {
+  const map = curMap(), P = pstate;
+  if (P.key !== d.key) { P.key = d.key; P.car = ''; P.type = 'all'; P.sort = 'new'; }
+  const ents = d.entries.filter(e => e.map === map);
+  const mapRows = d.history.filter(r => r.map === map);
+  const carNames = [...new Set([...ents.map(e => e.car), ...mapRows.map(r => r.car)])];
+  if (P.car && !carNames.includes(P.car)) P.car = '';
+  const rows = mapRows.filter(r => (!P.car || r.car === P.car) && (P.type === 'all' || r.type === P.type));
+  // the driver's best under the filter comes from the permanent bests (history may have lost the old laps)
+  const fEnts = ents.filter(e => !P.car || e.car === P.car);
+  const recs = fEnts.flatMap(e => P.type === 'all' ? [e.best, e.standing, e.rolling] : [e[P.type]]).filter(Boolean);
+  let best = faster(...recs);
+  if (!best && rows.length) { const r = rows.reduce((a, b) => b.ms < a.ms ? b : a); best = { ms:r.ms, type:r.type, car:r.car, at:r.at, sectors:r.sectors }; }
+  const sets = [...rows.map(r => r.sectors), ...recs.map(r => r.sectors)];
+  if (!d.hasBests && d.oldSectors.length) sets.push(d.oldSectors);
+  const bs = bestSectors(sets), ideal = bs.length && bs.every(v => v > 0) ? sum(bs) : 0;
+  const st = stats(rows);
+  const lapCount = P.type === 'all' ? sum(fEnts.map(e => e.laps)) || rows.length : rows.length;
+
+  // ---- header
+  const maps = [...new Set([...d.entries.map(e => e.map), ...d.history.map(r => r.map)])];
+  const cars = new Set([...d.entries.map(e => e.car), ...d.history.map(r => r.car)]);
+  const head = `<div><h2 id="dtitle">${esc(d.name)}${d.guest ? '<span class="gtag">guest</span>' : ''}</h2>
+      <div class="dsub">${d.totalLaps > 0 ? d.totalLaps + ' laps' : 'laps not counted'} &middot; ${cars.size} car${cars.size === 1 ? '' : 's'} &middot; ${maps.length} map${maps.length === 1 ? '' : 's'}
+      &middot; showing ${esc(mapName(map))}</div></div>
+    <button class="x" data-act="close" aria-label="Close driver panel" title="Close (Esc)">&times;</button>`;
+
+  // ---- filters
+  const mapChips = maps.length > 1 ? `<div class="frow"><span class="fl">Map</span><div class="chips scroll">${maps.map(m => chip(mapName(m), null, m === map, 'map', m)).join('')}</div></div>` : '';
+  const carChips = chip('All cars', null, !P.car, 'pcar', '') + carNames.map(c => chip(c, null, c === P.car, 'pcar', c)).join('');
+  const typeChips = [['all', 'All'], ['standing', 'Standing'], ['rolling', 'Rolling']].map(([id, l]) => chip(l, null, id === P.type, 'ptype', id)).join('');
+  const sortChips = [['new', 'Newest'], ['fast', 'Fastest']].map(([id, l]) => chip(l, null, id === P.sort, 'psort', id)).join('');
+  const filters = `<div class="filters">${mapChips}
+      <div class="frow"><span class="fl">Car</span><div class="chips scroll">${carChips}</div></div>
+      <div class="frow"><span class="fl">Type</span><div class="chips scroll">${typeChips}</div></div>
+      <div class="frow"><span class="fl">Sort</span><div class="chips scroll">${sortChips}</div></div></div>`;
+
+  if (!ents.length && !mapRows.length)
+    return { head, body:filters + `<div class="empty box">${esc(d.name)} has no laps on ${esc(mapName(map))}.${maps.length > 1 ? ' Pick another map above.' : ''}</div>` };
+
+  // ---- stat tiles
+  const tile = (l, v, s) => `<div class="tile"><div class="tl">${l}</div><div class="tv t">${v}</div><div class="ts">${s || '&nbsp;'}</div></div>`;
+  const tiles = `<div class="tiles">
+      ${tile('Best lap', best ? fmt(best.ms) : '-', best ? esc(best.car || '') + (best.type && best.type !== 'legacy' ? ' ' + (best.type === 'standing' ? 'S' : 'R') : '') : '')}
+      ${tile('Ideal lap', ideal ? fmt(ideal) : '-', ideal && best && best.ms > ideal ? fmt(best.ms - ideal) + ' to find' : 'sum of best sectors')}
+      ${tile('Consistency', st.sd == null ? '-' : '&plusmn;' + (st.sd / 1000).toFixed(2) + ' s', st.sd == null ? 'needs 3+ laps in history' : 'last ' + Math.min(10, rows.length) + ' laps, std dev')}
+      ${tile('Laps', lapsStr(lapCount), P.type === 'all' ? 'counted' : 'in history')}
+      ${tile('Average lap', st.avg ? fmt(st.avg) : '-', rows.length ? 'of ' + rows.length + ' in history' : 'no history yet')}</div>`;
+
+  // ---- per-car best cards for this map
+  const cardList = ents.slice().sort((a, b) => a.best.ms - b.best.ms).map(e => {
+    const rec = M.records.get(e.map + '|' + e.car), m = medalOf(e.best.ms, rec);
+    return `<button class="card${P.car === e.car ? ' on' : ''}" data-act="pcar" data-v="${esc(P.car === e.car ? '' : e.car)}" title="Filter this panel to ${esc(e.car)}">
+        <div class="cn"><span>${esc(e.car)}</span>${medalHTML(m, e.best.ms, rec)}</div>
+        <div class="cb">${fmt(e.best.ms)}${typeTag(e.best.type)}</div>
+        <div class="cm">${e.laps > 0 ? e.laps + ' laps' : 'laps -'} &middot; ${e.best.at ? esc(ago(e.best.at)) : 'date unknown'}</div></button>`;
+  }).join('');
+
+  // ---- history table
+  const sorted = rows.slice();
+  const chrono = rows.slice().sort((a, b) => a.at - b.at || b.idx - a.idx);
+  chrono.forEach((r, i) => { r.n = i + 1; });
+  if (P.sort === 'fast') sorted.sort((a, b) => a.ms - b.ms || b.at - a.at); else sorted.sort((a, b) => b.at - a.at || a.idx - b.idx);
+  const histRows = sorted.map(r => {
+    const delta = best ? r.ms - best.ms : 0;
+    const cells = r.sectors.map((ms, i) => {
+      const b = bs[i], cls = b && ms <= b ? ' g' : b && ms > b * SPIN_FACTOR ? ' x' : '';
+      return `<i class="sb${cls}" data-tip="${esc('S' + (i + 1) + '  ' + secStr(ms) + (cls === ' g' ? '  your best' : cls === ' x' ? '  spin / stop' : ''))}"></i>`;
+    }).join('');
+    return `<tr class="${isFresh(d.key, r.map, r.car, r.at, r.ms).trim()}"><td class="r t dim">${r.n}</td><td>${relSpan(r.at)}</td>
+      <td class="t r ${r.rec ? 'pu' : best && delta <= 0 ? 'gr' : ''}"><b>${fmt(r.ms)}</b></td>
+      <td class="t r ${best && delta <= 0 ? 'gr' : 'ye'}">${!best ? '-' : delta <= 0 ? 'PB' : gapStr(delta)}${r.rec ? ' <span class="bdg rc">RECORD</span>' : ''}</td>
+      <td>${typeTag(r.type)}</td><td class="car">${esc(r.car)}</td><td class="t r">${r.kph ? Math.round(r.kph) : '-'}</td><td class="t r">${r.resets}</td>
+      <td>${cells ? `<div class="strip" aria-label="Sector times">${cells}</div>` : '<span class="dim">-</span>'}</td></tr>`;
+  }).join('');
+  const table = rows.length ? `<div class="box"><table class="tb hist"><thead><tr>
+      <th class="r">#</th><th>When</th><th class="r">Time</th><th class="r">To best</th><th>Type</th><th>Car</th><th class="r">km/h</th><th class="r">Resets</th><th>Sectors</th>
+    </tr></thead><tbody>${histRows}</tbody></table></div>` : `<div class="empty box">${d.history.length ? 'No laps in the history for this filter.' : 'No lap history yet. It builds up from the next lap (needs kkLap v0.28 or newer on the server).'}</div>`;
+  const cap = d.history.length >= 100 ? '<div class="note">History only holds the last 100 laps; older laps still count towards the bests above.</div>' : '';
+
+  const chartBox = rows.length >= 2 ? `<div class="chart" id="chartBox"></div><div class="clegend"><span><i style="background:var(--green)"></i>PB when set</span><span><i style="background:var(--purple)"></i>record when set</span><span><i class="ln"></i>best lap ${best ? fmt(best.ms) : ''}</span><span>lower is faster</span></div>`
+    : '<div class="empty box">Not enough laps in the history to draw a chart yet.</div>';
+  chartArgs = rows.length >= 2 ? { pts:chrono.map(r => ({ ms:r.ms, at:r.at, car:r.car, type:r.type, pb:r.pb, rec:r.rec })), best:best ? best.ms : 0 } : null;
+
+  return { head, body:filters + tiles + `<div class="h3">Best by car<small>${esc(mapName(map))}</small></div><div class="cards">${cardList || '<div class="empty">No bests on this map.</div>'}</div>
+    <div class="h3">Lap times<small>oldest left, newest right</small></div>${chartBox}
+    <div class="h3">Lap history<small>${rows.length} lap${rows.length === 1 ? '' : 's'}</small></div>${table}${cap}
+    <div class="foot"><i style="background:var(--green)"></i>your best for that sector <i style="background:var(--spin)"></i>${SPIN_FACTOR}x slower than your best (a spin or a stop). Hover or tap a block for its time.</div>` };
+}
+let lastFocus = null;
+function renderDrawer() {
+  const root = $('drawerRoot');
+  const d = state.driver && M ? M.byKey.get(state.driver) : null;
+  if (!d) {                                                // closed
+    if (!state.driver) pushedProfile = false;
+    if (drawerShown) {
+      root.firstElementChild && root.firstElementChild.classList.remove('dopen');
+      const old = root.firstElementChild; drawerShown = '';
+      setTimeout(() => { if (!drawerShown && old.parentNode === root) { root.innerHTML = ''; document.body.classList.remove('noscroll'); } }, 230);
+      if (lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll:true });
+    }
+    return;
+  }
+  const { head, body } = profile(d);
+  let wrap = root.firstElementChild;
+  if (!drawerShown || !wrap) {                             // first open: build, then slide in
+    lastFocus = document.activeElement;
+    root.innerHTML = `<div class="dwrap"><div class="scrim" data-act="close"></div>
+      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="dtitle"><div class="dhead" id="dhead"></div><div class="dbody" id="dbody"></div></aside></div>`;
+    wrap = root.firstElementChild;
+    document.body.classList.add('noscroll');
+    requestAnimationFrame(() => requestAnimationFrame(() => wrap.classList.add('dopen')));
+    drawerShown = d.key;
+    $('dhead').innerHTML = head; $('dbody').innerHTML = body;
+    $('dbody').scrollTop = 0;
+    const x = wrap.querySelector('.x'); if (x) x.focus({ preventScroll:true });
+  } else {                                                 // update in place: keep scroll + focus
+    wrap.classList.add('dopen');
+    const bodyEl = $('dbody'), top = drawerShown === d.key ? bodyEl.scrollTop : 0;
+    const ae = document.activeElement, key = ae && ae.closest('#drawerRoot') && ae.dataset.act ? [ae.dataset.act, ae.dataset.v] : null;
+    $('dhead').innerHTML = head; bodyEl.innerHTML = body; bodyEl.scrollTop = top;
+    drawerShown = d.key;
+    if (key) { const again = [...root.querySelectorAll('[data-act]')].find(x => x.dataset.act === key[0] && x.dataset.v === key[1]); if (again) again.focus({ preventScroll:true }); }
+  }
+  const box = $('chartBox');
+  if (box && chartArgs) {
+    drawChart(box, chartArgs.pts, chartArgs.best);
+    if (chartObserver) chartObserver.disconnect();
+    if (window.ResizeObserver) { let lastW = box.clientWidth; chartObserver = new ResizeObserver(() => { if (box.clientWidth !== lastW && chartArgs) { lastW = box.clientWidth; drawChart(box, chartArgs.pts, chartArgs.best); } }); chartObserver.observe(box); }
+  }
+}
+
+/* ======================= 9. CLICKS, KEYS, TOOLTIP ======================= */
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-act]');
+  if (!t) return;
+  const v = t.dataset.v;
+  switch (t.dataset.act) {
+    case 'map':   nav({ map:v }); break;
+    case 'tab':   nav({ tab:v }); break;
+    case 'car':   nav({ car:v }); break;
+    case 'type':  nav({ type:v }); break;
+    case 'carrow': nav({ tab:'board', car:v }); break;
+    case 'driver': nav({ driver:v }); break;
+    case 'close': closeProfile(); break;
+    case 'pcar':  pstate.car = v; renderDrawer(); break;
+    case 'ptype': pstate.type = v; renderDrawer(); break;
+    case 'psort': pstate.sort = v; renderDrawer(); break;
+    case 'more':  state.recentN += PAGE_SIZE; render(); break;
+  }
+});
+document.addEventListener('input', e => {
+  if (e.target.id !== 'q') return;
+  state.q = e.target.value;                                // search is not part of the URL; redraw only the table
+  const rows = boardRows(curMap(), curCar(curMap(), state.type), state.type);
+  if (rows.length && $('lbTable')) $('lbTable').innerHTML = boardTable(rows, boardInfo(rows));
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && state.driver) { closeProfile(); return; }
+  if (e.key === 'Tab' && state.driver) {                   // keep Tab inside the open panel
+    const items = [...document.querySelectorAll('#drawerRoot button, #drawerRoot [tabindex="0"], #drawerRoot a[href]')].filter(x => x.offsetParent !== null && x.getAttribute('tabindex') !== '-1' && !x.classList.contains('scrim'));
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (!document.querySelector('#drawerRoot').contains(document.activeElement)) { first.focus(); e.preventDefault(); }
+    else if (e.shiftKey && document.activeElement === first) { last.focus(); e.preventDefault(); }
+    else if (!e.shiftKey && document.activeElement === last) { first.focus(); e.preventDefault(); }
+  }
+});
+window.addEventListener('hashchange', () => { const had = state.driver; parseHash(); if (!had && state.driver) pushedProfile = true; render(); });   // opened by back/forward/typing: Close steps back
+
+// small hover/tap tip for anything with data-tip (sector blocks, medals, S/R tags)
+const tipEl = $('tip');
+let tipTimer = 0;
+function showTip(t, x, y) {
+  tipEl.textContent = t.dataset.tip; tipEl.hidden = false;
+  const r = t.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+  tipEl.style.left = Math.max(6, Math.min(innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + 'px';
+  tipEl.style.top = (r.top - h - 8 < 4 ? r.bottom + 8 : r.top - h - 8) + 'px';
+  clearTimeout(tipTimer); tipTimer = setTimeout(hideTip, 3500);
+}
+const hideTip = () => { tipEl.hidden = true; };
+document.addEventListener('pointerover', e => { const t = e.pointerType === 'mouse' && e.target.closest && e.target.closest('[data-tip]'); if (t) showTip(t); });
+document.addEventListener('pointerout', e => { if (e.pointerType === 'mouse' && e.target.closest && e.target.closest('[data-tip]')) hideTip(); });
+document.addEventListener('click', e => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t) showTip(t); else hideTip(); });   // taps on phones
+document.addEventListener('scroll', hideTip, true);
+
+/* ======================= 10. LOADING (every 30 s) ======================= */
+let lastText = null, shown = null;
+async function load() {
+  try {
+    const r = await fetch('times.json?t=' + Date.now(), { cache:'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const text = await r.text();
+    if (text !== lastText) {                               // new data: rebuild the model and redraw
+      const next = normalize(JSON.parse(text));
+      const ids = new Set();
+      for (const d of next.drivers) for (const l of d.history) ids.add(lapId(d.key, l.map, l.car, l.at, l.ms));
+      if (seen) {                                          // not the first load: whatever is new gets highlighted for a few seconds
+        fresh = new Set([...ids].filter(id => !seen.has(id)));
+        clearTimeout(freshTimer); freshTimer = setTimeout(() => { fresh = new Set(); }, FRESH_MS);
+      }
+      seen = ids; M = next; lastText = text;
+    }
+    const changed = text !== shown;
+    errText = ''; lastOk = new Date();
+    if (!location.hash && M.maps.length) history.replaceState(null, '', toHash({ ...state, map:curMap() }));   // make the first view shareable
+    if (changed) { shown = text; render(); } else renderTop();       // same data: leave the page alone (keeps hover, scroll, typing)
+  } catch (err) {
+    // keep the last good data on screen, just say what went wrong
+    errText = 'Could not read times.json: ' + (err && err.message ? err.message : err) + (M ? ' (showing the last good data)' : '');
+    renderTop();
+  }
+}
+setInterval(() => document.querySelectorAll('.rel[data-at]').forEach(s => { s.textContent = ago(+s.dataset.at); }), 15000);   // "4 min ago" stays fresh between loads
+parseHash();
+load();
+setInterval(load, REFRESH_MS);
 </script>
 </body>
 </html>

@@ -36,7 +36,8 @@ and their best", "break down to each map", "records the model car that was often
 - Car name bug: client cached the name per vid; BeamMP keeps the vid on a car swap, so the old car rode on.
   Now the jbeam key is re-read every time; a change logs "vid N changed car: A -> B".
 - Leaderboard page rewritten (map chips, Leaderboard/Cars/Recent tabs, driver profile with filters, chart).
-  Brief: scratchpad brief_lb029.md. Built by a builder agent.
+  Brief: scratchpad brief_lb029.md. Built by a builder agent (80+9 headless checks, 1280 and 390 px); I re-ran it on
+  server-written times.json (no errors) and fixed a long name running under the lap time on phone cards.
 Upload set for v0.29: main.lua, kkLap_v0.29.zip (delete 0.27 zip), leaderboard/index.html. Then console:
 `lap adminchat on`, `lap set maxLaps 0`. Check the log for the "map:" line.
 
