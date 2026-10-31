@@ -15,7 +15,7 @@
 -- is the single place to read when something goes wrong.
 
 local PLUGIN   = "kkLap"
-local VERSION  = "0.28"   -- same number as the client zip it was built with
+local VERSION  = "0.29"   -- same number as the client zip it was built with
 local CFG_PATH = "Resources/Server/kkLap/config.json"   -- forward slashes work on both OS
 
 -- ---------------------------------------------------------------- logging
@@ -181,9 +181,16 @@ end
 --           legacy = { ms, sectors, kph, resets },             <- a pre-0.27 bestMs whose type nobody knows, kept in the race
 --           bestSectors = { ... } }                            <- best per sector, any lap, for the split deltas
 local board = {}
+local mapName, mapFrom = nil, nil    -- the map this server runs, slug "west_coast_usa" (v0.29); see learnMap
+-- times.json = the board plus "_meta" for the web page (v0.29: version, map, when written, the run settings).
+-- "_meta" lives only in the file: loadBoard takes it out again, so no loop over the board ever meets it.
 local function saveBoard()
+    local out = {}
+    for k, v in pairs(board) do out[k] = v end
+    out._meta = { version = VERSION, map = mapName, updated = os.time(), maxLaps = cfg.maxLaps, timeoutS = cfg.timeoutS,
+                  checkpoints = #cfg.checkpoints }
     local f = io.open(TIMES_PATH, "w")
-    if f then f:write(Util.JsonEncode(board)); f:close() end
+    if f then f:write(Util.JsonEncode(out)); f:close() end
 end
 -- v0.27: two entries in the live times.json (laps from 27/10, before the name field existed) had no name
 -- and the web page showed "?". For a guest the key IS the name. An "id:" key with no name stays "?" (the
@@ -195,6 +202,7 @@ local function loadBoard()
     local ok, t = pcall(Util.JsonDecode, f:read("*a")); f:close()
     if not (ok and type(t) == "table") then return end
     board = t
+    board._meta = nil                    -- written for the web page only (v0.29)
     local changed = false
     for key, e in pairs(board) do
         if type(e) == "table" then
@@ -219,7 +227,22 @@ end
 -- resets and car (as v0.24 did for the one best); the top-level fields are the better of the two (or a
 -- legacy lap). Merging by minimum, so calling it again with the same laps changes nothing.
 local function copyList(list) local out = {}; for i, v in ipairs(list or {}) do out[i] = v end; return out end
-local HISTORY_MAX = 50   -- laps kept per driver in times.json for the web page's drop-down (v0.28); laps.log keeps them all
+local HISTORY_MAX = 100  -- laps kept per driver in times.json for the web page (v0.28: 50, v0.29: 100); laps.log keeps them all
+-- the permanent record per map + car (v0.29, Darren: "each player has history of each lap they did for each model
+-- car, and their best" and "needs to break down to each map"). history is only the last 100 laps; bests never
+-- forget. bests["<map>|<car>"] = { map, car, laps, best = lap, standing = lap, rolling = lap },
+-- lap = { ms, type, sectors, kph, resets, at }
+local function bestsPut(e, row)
+    e.bests = e.bests or {}
+    local map, car = row.map or "unknown", row.car or "Unknown car"
+    local k = map .. "|" .. car
+    local b = e.bests[k] or { map = map, car = car, laps = 0 }
+    b.laps = (b.laps or 0) + 1
+    local lap = { ms = row.ms, type = row.type, sectors = copyList(row.sectors), kph = row.kph, resets = row.resets, at = row.at }
+    if not b.best or row.ms < b.best.ms then b.best = lap end
+    if row.type and (not b[row.type] or row.ms < b[row.type].ms) then b[row.type] = lap end
+    e.bests[k] = b
+end
 local function boardPut(bkey, name, runBests, addLaps, bestSectors, lapRow)
     local e = board[bkey] or {}
     e.name = name
@@ -227,6 +250,7 @@ local function boardPut(bkey, name, runBests, addLaps, bestSectors, lapRow)
         e.history = e.history or {}
         table.insert(e.history, 1, lapRow)
         while #e.history > HISTORY_MAX do table.remove(e.history) end
+        bestsPut(e, lapRow)
     end
     e.laps = (e.laps or 0) + (addLaps or 0)
     e.bestSectors = bestSectors or e.bestSectors
@@ -245,6 +269,78 @@ local function boardPut(bkey, name, runBests, addLaps, bestSectors, lapRow)
     end
     if top then e.bestMs = top.ms; e.sectors = copyList(top.sectors); e.kph = top.kph or 0; e.resets = top.resets or 0; e.car = top.car end
     board[bkey] = e
+end
+-- the map (v0.29). The server asks BeamMP first: MP.Get(MP.Settings.Map) returns ServerConfig's Map,
+-- "/levels/west_coast_usa/info.json" (BeamMP-Server src/LuaAPI.cpp, MP::Get case 4; on the "minor" branch,
+-- checked 31/10; older builds have MP.Set only, so pcall). A client's getMissionFilename() is the fallback (kkLap_ack).
+-- When the map becomes known, board entries from before v0.29 are stamped with it: laps with no map, and a
+-- "bests" table built from the old standing/rolling/legacy laps. Logged, because it is a guess: they were driven
+-- on the map the server runs NOW.
+local function mapSlug(s)
+    if type(s) ~= "string" or s == "" then return nil end
+    return s:match("levels/([^/]+)") or s:match("^([%w_%-]+)$")
+end
+local function stampBoard()
+    if not mapName then return end
+    local n = 0
+    for key, e in pairs(board) do
+        if type(e) == "table" then
+            local touched = false
+            for _, row in ipairs(e.history or {}) do if row.map == nil then row.map = mapName; touched = true end end
+            if e.bests then
+                local unknown = {}                                 -- laps timed before the map was known: move them
+                for k, b in pairs(e.bests) do if b.map == "unknown" then unknown[#unknown + 1] = k end end   -- (no adding keys mid-pairs)
+                for _, k in ipairs(unknown) do
+                    local b = e.bests[k]
+                    do
+                        e.bests[k] = nil; b.map = mapName
+                        local k2 = mapName .. "|" .. tostring(b.car)
+                        local o = e.bests[k2]
+                        if o then
+                            o.laps = (o.laps or 0) + (b.laps or 0)
+                            for _, kind in ipairs({ "best", "standing", "rolling" }) do
+                                if b[kind] and (not o[kind] or b[kind].ms < o[kind].ms) then o[kind] = b[kind] end
+                            end
+                        else e.bests[k2] = b end
+                        touched = true
+                    end
+                end
+            end
+            if not e.bests then
+                e.bests = {}
+                for _, kind in ipairs({ "standing", "rolling", "legacy" }) do
+                    local l = e[kind]
+                    if type(l) == "table" and l.ms then
+                        local car = l.car or e.car or "Unknown car"
+                        local k = mapName .. "|" .. car
+                        local b = e.bests[k] or { map = mapName, car = car, laps = 0 }
+                        local lap = { ms = l.ms, type = (kind ~= "legacy") and kind or nil, sectors = copyList(l.sectors), kph = l.kph, resets = l.resets }
+                        if not b.best or l.ms < b.best.ms then b.best = lap end
+                        if kind ~= "legacy" and (not b[kind] or l.ms < b[kind].ms) then b[kind] = lap end
+                        e.bests[k] = b
+                    end
+                end
+                local cars = {}
+                for _, b in pairs(e.bests) do cars[#cars + 1] = b end
+                if #cars == 1 then cars[1].laps = e.laps or 0 end   -- one car: the old lap count is its count; two: unknown split, 0 each
+                touched = true
+            end
+            if touched then n = n + 1 end
+        end
+    end
+    if n > 0 then
+        log("I", string.format("board: %d entries from before v0.29 given the map %s (the map the server runs now)", n, mapName))
+        saveBoard()
+    end
+end
+local function learnMap(s, from)
+    local m = mapSlug(s)
+    if not m or m == mapName then return end
+    if mapName and mapFrom == "server" then return end   -- the server's own config beats a client's report
+    if mapName then log("W", string.format("map: %s said %s, was %s (from %s)", from, m, mapName, tostring(mapFrom))) end
+    mapName, mapFrom = m, from
+    log("I", string.format("map: %s (from %s)", m, from))
+    stampBoard()
 end
 local function lapRecord(line)       -- the permanent record, one line per lap
     local f = io.open(LAPS_PATH, "a")
@@ -655,7 +751,7 @@ function onCross(pid, data)
                 local bs = {}
                 for i, v in pairs(r.bestSectors) do bs[i] = v end
                 boardPut(playerKey(pid), name, r.runBests, 1, bs,
-                         { ms = lap, type = kind, car = r.car, kph = kph, resets = r.resets, at = os.time(), sectors = copyList(r.sectors) })
+                         { ms = lap, type = kind, car = r.car, map = mapName, kph = kph, resets = r.resets, at = os.time(), sectors = copyList(r.sectors) })
                 saveBoard()
             end
             r.resets = 0; r.invalid = false; r.invalidWhy = nil
@@ -753,6 +849,7 @@ function onAck(pid, data)
     local ok, d = pcall(Util.JsonDecode, data)
     if not ok or type(d) ~= "table" then log("E", "bad ack from " .. pid .. ": " .. tostring(data)); return end
     noteClientVersion(pid, d.v)
+    if d.map and mapFrom ~= "server" then learnMap(tostring(d.map), "client " .. (MP.GetPlayerName(pid) or ("p" .. pid))) end   -- v0.29
 end
 
 -- client answers "where is vehicle X" for /lap mark
@@ -1244,6 +1341,9 @@ end
 function onInit()
     local fromFile = loadCfg()
     loadBoard()
+    local okm, m = pcall(function() return MP.Get(MP.Settings.Map) end)     -- v0.29, see learnMap
+    if okm and type(m) == "string" and mapSlug(m) then learnMap(m, "server")
+    else log("I", "map: this BeamMP build cannot tell the plugin its map (" .. tostring(m) .. "); the first client to join will") end
     MP.RegisterEvent("onChatMessage",      "onChatMessage")
     MP.RegisterEvent("onPlayerJoin",       "onPlayerJoin")
     MP.RegisterEvent("onPlayerDisconnect", "onPlayerDisconnect")

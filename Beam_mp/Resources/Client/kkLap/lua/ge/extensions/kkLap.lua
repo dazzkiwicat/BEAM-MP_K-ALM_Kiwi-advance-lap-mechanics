@@ -14,7 +14,7 @@
 -- and, when cfg.debug is on, the same lines are sent to the server log too.
 
 local M = {}
-M.VERSION = '0.28'   -- bump this; the zip name and the log lines follow it
+M.VERSION = '0.29'   -- bump this; the zip name and the log lines follow it
 
 local cfg      = { debug = true, markers = true, checkpoints = {} }
 -- [vid] = { nextCp, inside, started, waiting, inStart, flashCp, flashT, lastPos, slewT, physResets, invalid }
@@ -224,7 +224,11 @@ local function onCfg(data)
         #cfg.checkpoints, cfg.finish and ' + finish' or '', tostring(cfg.debug), tostring(cfg.markers), tostring(cfg.hud), tostring(d.trackRev), why))
     dbg('own map at cfg time: ' .. ownList())
     -- v0.25: tell the server which version got it (it warns a player on an old zip)
-    TriggerServerEvent('kkLap_ack', jsonEncode({ v = M.VERSION, rev = d.trackRev, cps = #cfg.checkpoints, reset = newTrack }))
+    -- map (v0.29): the server asks BeamMP first; this is the fallback for older BeamMP builds. getMissionFilename():
+    -- BeamNG GE global, "/levels/<map>/..." (from memory, UNCHECKED live, so pcall; nil = not sent)
+    local okm, mapFile = pcall(function() return getMissionFilename() end)
+    TriggerServerEvent('kkLap_ack', jsonEncode({ v = M.VERSION, rev = d.trackRev, cps = #cfg.checkpoints, reset = newTrack,
+                                                 map = (okm and type(mapFile) == 'string' and mapFile ~= '') and mapFile or nil }))
 end
 
 local function insideCp(veh, cp)
@@ -372,13 +376,16 @@ end
 -- The car's make and model for the board and laps.log (v0.27, Darren: "just like other racing car games it
 -- has car make and model"). veh:getJBeamFilename() gives the model key ("etk800", BeamNG GE, used since v0.24);
 -- core_vehicles.getModel(key).model has Brand and Name ("ETK", "800-Series"): BeamNG GE, from memory of the
--- stock Lua, UNCHECKED live, so it runs in pcall and the key is the fallback. Cached per vid, logged once.
-local carNames = {}
+-- stock Lua, UNCHECKED live, so it runs in pcall and the key is the fallback. Cached per vid AND model key (v0.28):
+-- BeamMP keeps the vid when a player swaps car (log 31/10: "vehicle 46293 spawned (own: yes)" over and over), and
+-- the v0.27 cache, per vid only, kept naming the old car. Now the key is read every time (cheap) and a new key
+-- means a new name, logged once per change.
+local carNames, carKeys = {}, {}
 local function carName(vid, veh)
-    if carNames[vid] then return carNames[vid] end
     local key
     pcall(function() key = veh:getJBeamFilename() end)
-    if type(key) ~= 'string' or key == '' then return nil end
+    if type(key) ~= 'string' or key == '' then return carNames[vid] end
+    if carNames[vid] and carKeys[vid] == key then return carNames[vid] end
     local name
     pcall(function()
         local m = core_vehicles.getModel(key)
@@ -388,7 +395,8 @@ local function carName(vid, veh)
         end
     end)
     name = name or key
-    carNames[vid] = name
+    if carNames[vid] then dbg(string.format('vid %s changed car: %s -> %s', tostring(vid), carNames[vid], name)) end
+    carNames[vid] = name; carKeys[vid] = key
     dbg(string.format('vid %s is %s (%s)', tostring(vid), name, key))
     return name
 end

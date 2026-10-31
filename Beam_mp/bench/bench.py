@@ -1712,6 +1712,65 @@ def s_v28():
     console("lap set maxLaps 99")
 guard("v0.28", s_v28)
 
+# ---- v0.29: every lap knows its map (server MP.Get first, a client's getMissionFilename as fallback); the board keeps
+# a best per map + car; history 100; times.json carries _meta; a car swapped on the same vid is named afresh.
+def s_v29():
+    check(any("map: this BeamMP build cannot tell the plugin its map" in l for l in server_log), "v0.29 map: no MP.Get on this (bench) server: said once at load")
+    C.execute("getMissionFilename = function() return '/levels/west_coast_usa/main.level.json' end")
+    ms = len(server_log)
+    fresh_track([(0, 0, 0), (100, 0, 0)])                            # pushes the config; the client acks with its map
+    check(any(l.endswith("map: west_coast_usa (from client Darren)") for l in server_log[ms:]), "v0.29 map: learnt from the client's ack (%s)" % [l for l in server_log[ms:] if "map:" in l][:2])
+    console("lap set maxLaps 0")
+    jbeams[100] = "etk800"
+    for k in list(M.carNames.keys()): M.carNames[k] = None
+    drive(100, [(0, 0, 0)]); race_start([100]); drive(100, [(50, 0, 0)])
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)]); lapA = laps()[-1]
+    meta = json.load(open("Resources/Server/kkLap/times.json")).get("_meta", {})
+    check(meta.get("map") == "west_coast_usa" and meta.get("version") == "0.29" and meta.get("checkpoints") == 2 and meta.get("maxLaps") == 0 and isinstance(meta.get("updated"), int),
+          "v0.29 _meta: after a lap, times.json says version, map, checkpoints, maxLaps and when (%s)" % meta)
+    e = board()["id:42"]; b = e["bests"].get("west_coast_usa|ETK 800-Series", {})
+    check(e["history"][0]["map"] == "west_coast_usa" and e["history"][0]["car"] == "ETK 800-Series" and b.get("best", {}).get("ms") == lapA["lapMs"] and b["laps"] >= 1 and b["standing"]["ms"] == lapA["lapMs"],
+          "v0.29 bests: the lap is in history with its map and car, and is the best of west_coast_usa|ETK 800-Series (%s)" % {k: v for k, v in b.items() if k != "best"} if b else "no bests entry")
+    jbeams[100] = "pickup"                                           # the player swaps car: BeamMP keeps vid 100
+    mc = len(client_log); X0 = len(events_to_server)
+    drive(100, [(50, 0, 0), (0, 0, 0)])                              # out of the bubble, back in
+    cars = [json.loads(d).get("car") for n, d in events_to_server[X0:] if n == "kkLap_bubble" and json.loads(d).get("inside")]
+    check(cars[-1:] == ["pickup"] and any("vid 100 changed car: ETK 800-Series -> pickup" in l for l in client_log[mc:]),
+          "v0.29 car: a swap on the same vid is named afresh on the next bubble entry (%s)" % cars)
+    race_start([100]); drive(100, [(50, 0, 0)])
+    drive(100, [(100, 0, 0)] + [(50, 0, 0)] * 50 + [(0, 0, 0)]); lapB = laps()[-1]
+    e = board()["id:42"]
+    check(lapB["car"] == "pickup" and e["history"][0]["car"] == "pickup" and "west_coast_usa|pickup" in e["bests"] and e["bests"]["west_coast_usa|ETK 800-Series"]["best"]["ms"] == lapA["lapMs"],
+          "v0.29 bests: the next lap goes to the new car, the old car keeps its best (%s)" % sorted(e["bests"]))
+    # a server restart on a BeamMP build that has MP.Get: the server's own map wins, a client cannot change it
+    G.MP.Get = lambda i: "/levels/utah/info.json" if i == 4 else None
+    G.MP.Settings = S.table(Map=4)
+    ms = len(server_log)
+    S.execute(SERVER.read_text()); G.onInit()
+    check(any(l.endswith("map: utah (from server)") for l in server_log[ms:]), "v0.29 map: MP.Get(MP.Settings.Map) is asked first at load")
+    r = console("lap times")
+    check("_meta" not in r and "1. " in r, "v0.29 _meta: read back from times.json, it is not a driver (%r)" % r[:120])
+    ms = len(server_log)
+    fresh_track([(0, 0, 0), (100, 0, 0)])
+    check(not any("map: west_coast_usa" in l for l in server_log[ms:]) and json.load(open("Resources/Server/kkLap/times.json"))["_meta"]["map"] == "utah",
+          "v0.29 map: a client reporting another map does not override the server's")
+    # the live board is v0.27-shaped (no history, no bests): the first v0.29 load stamps it with the server's map
+    old = {"KiwiPower": {"name": "KiwiPower", "bestMs": 120719, "laps": 6, "car": "Porsche 911 (992)",
+                         "standing": {"ms": 122429, "sectors": [1, 2], "kph": 214, "resets": 0, "car": "Porsche 911 (992)"},
+                         "rolling": {"ms": 120719, "sectors": [1, 2], "kph": 213, "resets": 0, "car": "Porsche 911 (992)"}},
+           "guest1": {"name": "guest1", "bestMs": 150000, "laps": 1, "legacy": {"ms": 150000, "sectors": [], "kph": 0, "resets": 0}}}
+    json.dump(old, open("Resources/Server/kkLap/times.json", "w"))
+    ms = len(server_log)
+    S.execute(SERVER.read_text()); G.onInit()
+    t = json.load(open("Resources/Server/kkLap/times.json"))
+    kb = t["KiwiPower"].get("bests", {}).get("utah|Porsche 911 (992)", {}); gb = t["guest1"].get("bests", {}).get("utah|Unknown car", {})
+    check(kb.get("best", {}).get("ms") == 120719 and kb["rolling"]["ms"] == 120719 and kb["standing"]["ms"] == 122429 and kb["laps"] == 6
+          and gb.get("best", {}).get("ms") == 150000 and "standing" not in gb and t["_meta"]["map"] == "utah"
+          and any("board: 2 entries from before v0.29 given the map utah" in l for l in server_log[ms:]),
+          "v0.29 stamp: a v0.27 board gets bests on the server's map at the first load, legacy laps as best only, logged (%s | %s)" % (kb, gb))
+    console("lap set maxLaps 99")
+guard("v0.29", s_v29)
+
 def s_v27_shadow():
     fresh_track([(0, 0, 0), (100, 0, 0)])
     positions[100] = (0, 0, 0); velocities[100] = (0.0, 0.0, 0.0)

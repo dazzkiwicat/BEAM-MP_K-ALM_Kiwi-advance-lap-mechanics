@@ -1,6 +1,6 @@
 # kkLap STATE  (live file: read this first, update it last)
 
-Updated: 2026-10-31 by Claude. Current version: **0.28** (server main.lua and client zip share it; **0.27 is what the live server runs**, from 31/10 20:25, kkLap_2.log). Branch: claude/festive-ritchie-7slk5q
+Updated: 2026-10-31 by Claude. Current version: **0.29** (server main.lua and client zip share it; **0.27 is what the live server runs**, from 31/10 20:25, kkLap_2.log; 0.28 was never uploaded). Branch: claude/festive-ritchie-7slk5q
 
 ## Goal (Darren, chat 26/10)
 A far better lap timer than the built-in one, built so later game modes (drag, pursuit,
@@ -24,6 +24,22 @@ so the Resources/Server path and onInit are known to work on his setup.
 Live status 26/10 ~23:30: **v0.3.0 timed a real lap on the real server** (Darren: "seems to
 work"). v0.4.0 markers LIVE and seen. v0.5.0 (sectors, speed, chat announce, laps.log, /lap times)
 v0.6.0 honk countdown and sector laps LIVE. v0.7.0 (big centre flashes, running clock, short lap toast) bench-passed 48 checks, LIVE through v0.7.1 ("it all worked"). v0.15 LIVE. v0.19 LIVE. v0.21 pushed (music autoplay on car load; deltas, id-keyed board, wrong way, Discord poster script), ran 5 days live, three bugs found (30/10). v0.22 fixes them, bench 128, NOT yet live. v0.23 (race timer on the HUD, no sector/lap toasts) bench 151, NOT yet live. v0.24 (review fixes) bench 194, NOT yet live. v0.25 (admin commands from the server console only; self-explaining logs, lap status, lap report) bench 244, NOT yet live.## Next move (31/10 late, read this and go)
+**v0.29 on top of v0.28** (Darren 31/10 late: "modern stats menu", "history of each lap ... for each model car,
+and their best", "break down to each map", "records the model car that was often used previously"). Bench 370 checks, --break fails.
+- Map: server asks `MP.Get(MP.Settings.Map)` (exists on BeamMP-Server branch "minor", src/LuaAPI.cpp MP::Get case
+  4, checked 31/10; NOT on old master, so pcall). Fallback: client sends getMissionFilename() in kkLap_ack
+  (UNCHECKED live). Log line "map: <slug> (from server|client <name>)"; if neither: "cannot tell the plugin its map".
+- Every history row has `map`; history cap 100; board entry `bests["map|car"] = {map,car,laps,best,standing,rolling}`
+  (permanent). The first v0.29 load stamps the old v0.27 board with the map the server runs NOW (logged:
+  "board: N entries from before v0.29 given the map X") - a guess, right only if the server never changed map.
+- times.json gets `_meta` {version, map, updated, maxLaps, timeoutS, checkpoints}; refreshed on each board write.
+- Car name bug: client cached the name per vid; BeamMP keeps the vid on a car swap, so the old car rode on.
+  Now the jbeam key is re-read every time; a change logs "vid N changed car: A -> B".
+- Leaderboard page rewritten (map chips, Leaderboard/Cars/Recent tabs, driver profile with filters, chart).
+  Brief: scratchpad brief_lb029.md. Built by a builder agent.
+Upload set for v0.29: main.lua, kkLap_v0.29.zip (delete 0.27 zip), leaderboard/index.html. Then console:
+`lap adminchat on`, `lap set maxLaps 0`. Check the log for the "map:" line.
+
 v0.28 = fixes from the v0.27 live log (kkLap_2.log, 31/10 20:25-23:49, 4 drivers) + Darren's asks. Bench 360, --break fails.
 What the log showed:
 - **The live config.json holds minLaps = 2** (stored by an older version; code defaults never override a saved
